@@ -209,3 +209,28 @@ export function loadScanWindowPreference(): boolean {
 export function saveScanWindowPreference(enabled: boolean): void {
   try { storage()?.setItem('amdf:scan-window:v1', String(enabled)); } catch { /* ignore */ }
 }
+
+const popoutWindowKey = 'amdf:popout-window:v1';
+
+/** The scan window this extension opened last; validated against chrome.windows.get before reuse. */
+export function loadPopoutWindowId(): number | null {
+  try {
+    const raw = storage()?.getItem(popoutWindowKey);
+    if (!raw || !/^\d{1,16}$/.test(raw)) return null;
+    const id = Number(raw);
+    return Number.isSafeInteger(id) && id > 0 ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+export function savePopoutWindowId(id: number | null): void {
+  try {
+    const store = storage();
+    if (!store) return;
+    if (id === null || !Number.isSafeInteger(id) || id <= 0) store.removeItem(popoutWindowKey);
+    else store.setItem(popoutWindowKey, String(id));
+  } catch {
+    // A storage failure must not block opening or focusing the window.
+  }
+}

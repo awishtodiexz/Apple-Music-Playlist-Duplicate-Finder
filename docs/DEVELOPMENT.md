@@ -41,6 +41,10 @@ assets/    icon source and the INSTALL.txt bundled in the ZIP
 docs/      this file, the architecture notes and README screenshots
 ```
 
+## MusicKit fixtures
+
+`tests/fixtures/musickit/*.json` are sanitized shape captures derived from observed Apple Music responses. They give the bridge tests one canonical set of response envelopes to update when Apple changes its payloads. Replace them with fresh sanitized captures when that happens, and never include credentials (tokens, cookies or emails) in a fixture.
+
 ## Releasing
 
 1. Set the npm version in `package.json` (for example, `1.6.0`), then run `npm install` to update the lockfile. Use `1.6` in `public/manifest.json` and release names when the patch is zero; keep nonzero patches, such as `1.6.1`.

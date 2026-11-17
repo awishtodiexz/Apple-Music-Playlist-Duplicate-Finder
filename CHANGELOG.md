@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- A build-time popup DOM contract check: every element id used by `src/popup.ts` must exist in the shipped HTML and bundle, so a stale markup/code pairing fails before packaging.
+- Sanitized MusicKit response fixtures and a contract test covering metadata, v3, legacy, nested, auth, rate-limit and malformed envelopes.
+- `npm run coverage`, a source-only gate: at least 90% lines per pure source file and at least 85% branches overall.
+
+### Changed
+
+- Fast typing in the search box coalesces into one list rebuild per burst instead of one per character.
+- Same-title duplicate detection is linear; 25,000 same-title songs group in milliseconds instead of roughly 0.75 seconds.
+- The scan timestamp is visible next to the results without opening Scan details.
+- **Open in a window** reuses and focuses the existing scan window, including after the toolbar popup is reopened.
+
+### Fixed
+
+- The primary **Scan again** button keeps its accent after a completed scan instead of rendering as an outlined secondary button.
+
 ## [1.6.2](https://github.com/awishtodiexz/Apple-Music-Playlist-Duplicate-Finder/releases/tag/v1.6.2) (2026-11-14)
 
 - Fix the popup failing to open in 1.6.1 with `Missing popup element`. Its build paired new popup markup with old popup code.

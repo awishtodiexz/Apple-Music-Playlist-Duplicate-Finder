@@ -96,6 +96,23 @@ test('rows that share a name and artist are flagged, and only those', () => {
   assert.equal(appleMusicId({ identity: 'library:i.ABC' }), 'i.ABC');
 });
 
+test('grouping 25,000 same-name songs is linear and keeps every identity', () => {
+  const shared = Array.from({ length: 25_000 }, (_, index) => ({
+    ...group('Same Song', 'Same Artist', [index + 1]),
+    identity: `catalog:${index}`,
+  }));
+  const started = performance.now();
+  const lookalikes = lookalikeIdentities(shared);
+  const elapsed = performance.now() - started;
+  assert.equal(lookalikes.size, 25_000);
+  assert.ok(lookalikes.has('catalog:0') && lookalikes.has('catalog:24999'));
+  assert.ok(elapsed < 500, `grouping 25,000 rows took ${elapsed.toFixed(1)} ms`);
+
+  const distinct = Array.from({ length: 25_000 }, (_, index) =>
+    group(`Song ${index}`, `Artist ${index}`, [index + 1]));
+  assert.equal(lookalikeIdentities(distinct).size, 0);
+});
+
 test('export labels name the filtered count and what they export', () => {
   assert.deepEqual(exportLabels(1200, false), {
     copy: 'Copy all 1,200', copyName: 'Copy all 1,200 repeated songs',

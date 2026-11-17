@@ -1,0 +1,34 @@
+{
+  "json": {
+    "data": [
+      {
+        "id": "i.fixture-1",
+        "type": "library-songs",
+        "attributes": {
+          "name": "Fixture Song One",
+          "artistName": "Fixture Artist A",
+          "playParams": { "catalogId": "1001" }
+        }
+      },
+      {
+        "id": "i.fixture-2",
+        "type": "library-songs",
+        "attributes": {
+          "name": "Fixture Song Two",
+          "artistName": "Fixture Artist B",
+          "playParams": { "catalogId": "1002" }
+        }
+      },
+      {
+        "id": "i.fixture-3",
+        "type": "library-songs",
+        "attributes": {
+          "name": "Fixture Song Three",
+          "artistName": "Fixture Artist C",
+          "playParams": { "catalogId": "1003" }
+        }
+      }
+    ],
+    "meta": { "total": 3 }
+  }
+}

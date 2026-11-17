@@ -4,7 +4,7 @@ import { connectFailure, errorCode, errorMessage, errorRecovery, recoveryLabel, 
 import { readPlaylist, scanLimits, type PlaylistSource, type ScanProgress } from './playlist-reader';
 import { detectPlaylist } from './playlist-url';
 import { appleMusicId, compareScans, comparisonText, csvFilename, exportLabels, formatGroupText, formatResultsText, lookalikeIdentities, outcomeTitle, positionParts, scanOutcome, splitPositions, summarize, summaryLine, toCsv, visibleGroups, type ResultSummary, type SortMode } from './results';
-import { cacheFreshness, clearCachedScan, loadCachedScan, loadScanWindowPreference, loadThemePreference, saveCachedScan, saveScanWindowPreference, saveThemePreference, type CachedScan, type CacheFreshness } from './storage';
+import { cacheFreshness, clearCachedScan, loadCachedScan, loadPopoutWindowId, loadScanWindowPreference, loadThemePreference, saveCachedScan, savePopoutWindowId, saveScanWindowPreference, saveThemePreference, type CachedScan, type CacheFreshness } from './storage';
 import { nextTheme, themeLabel, type ThemePreference } from './theme';
 import type { DuplicateGroup, PlaylistInfo, PlaylistRef } from './types';
 
@@ -174,12 +174,45 @@ scanWindowOption.hidden = pinnedTabId() !== null;
 scanWindow.checked = loadScanWindowPreference();
 scanWindow.addEventListener('change', () => saveScanWindowPreference(scanWindow.checked));
 
+// The scan window this popup opened. Kept so another pop-out click focuses it
+// instead of opening a second copy of the same results.
+// The scan window this extension opened last. It is persisted because opening
+// the window closes the toolbar popup, so an in-memory id would be forgotten.
+let popoutWindowId: number | null = loadPopoutWindowId();
+chrome.windows?.onRemoved?.addListener?.(windowId => {
+  if (windowId === popoutWindowId) {
+    popoutWindowId = null;
+    savePopoutWindowId(null);
+  }
+});
+
 async function openWindow(autoScan: boolean): Promise<void> {
   if (connectedTabId === null) return;
   const url = new URL(chrome.runtime.getURL('popup.html'));
   url.searchParams.set('tab', String(connectedTabId));
   if (autoScan && currentPlaylist) url.searchParams.set('scan', currentPlaylist.id);
-  await chrome.windows.create({ url: url.href, type: 'popup', width: 400, height: 760 });
+  const created = await chrome.windows.create({ url: url.href, type: 'popup', width: 400, height: 760 });
+  if (created && created.id !== undefined) {
+    popoutWindowId = created.id;
+    savePopoutWindowId(popoutWindowId);
+  }
+}
+
+/** Focus the window already opened from here, or open one when it is gone. */
+async function focusOrOpenWindow(): Promise<void> {
+  if (popoutWindowId === null) popoutWindowId = loadPopoutWindowId();
+  if (popoutWindowId !== null) {
+    try {
+      await chrome.windows.get(popoutWindowId);
+      await chrome.windows.update(popoutWindowId, { focused: true });
+      return;
+    } catch {
+      // The window was closed without onRemoved reaching this popup.
+      popoutWindowId = null;
+      savePopoutWindowId(null);
+    }
+  }
+  await openWindow(false);
 }
 
 function updatePopOut(): void {
@@ -194,7 +227,7 @@ function updatePopOut(): void {
 popOut.addEventListener('click', async () => {
   if (connectedTabId === null || busy) return;
   try {
-    await openWindow(false);
+    await focusOrOpenWindow();
   } catch {
     setStatus('Could not open a window', 'Try Open in a window again.');
   }
@@ -246,6 +279,7 @@ function announceStatus(key: string, repeatable: boolean, text: string): void {
 }
 
 function clearGroups(): void {
+  cancelSearchDebounce();
   groups = [];
   visible = [];
   displayed = 0;
@@ -478,6 +512,57 @@ function announceResults(): void {
       `${number(visible.length)} of ${number(groups.length)} songs match.`;
     if (resultsAnnouncer.textContent !== text) resultsAnnouncer.textContent = text;
   }, 500);
+}
+
+const searchDebounceMs = 120;
+let searchTimer: ReturnType<typeof setTimeout> | undefined;
+let searchTrailingPending = false;
+
+/** Forget a pending debounced search render and any trailing render folded into it. */
+function cancelSearchDebounce(): void {
+  clearTimeout(searchTimer);
+  searchTimer = undefined;
+  searchTrailingPending = false;
+}
+
+/**
+ * Leading-edge + trailing-edge debounce for the search box. The first keystroke
+ * renders at once so the list stays responsive; the rest of a burst coalesce into
+ * one render after typing settles. Sort and minimum-copies stay immediate.
+ */
+function onSearchInput(event: Event): void {
+  // Stale copy/download/reveal feedback describes the previous list; drop it as
+  // soon as the query changes, even while the list rebuild is coalesced.
+  resultsFeedback.textContent = '';
+  const input = event as InputEvent;
+  // Typing emits one single-character insertion per event; a fill, paste or
+  // clear replaces the whole value at once. Only keystroke bursts need
+  // coalescing, and whole-value edits must stay immediate for callers that fill
+  // the field and assert the new list on the next line.
+  const typing = input.inputType === 'insertText' && input.data !== null && input.data.length === 1;
+  if (!typing) {
+    renderResultsNow();
+    return;
+  }
+  if (searchTimer === undefined) {
+    renderResults();
+  } else {
+    searchTrailingPending = true;
+  }
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    searchTimer = undefined;
+    if (searchTrailingPending) {
+      searchTrailingPending = false;
+      renderResults();
+    }
+  }, searchDebounceMs);
+}
+
+/** Render from a non-typing control or an explicit clear, cancelling a pending trailing render. */
+function renderResultsNow(): void {
+  cancelSearchDebounce();
+  renderResults();
 }
 
 /** Paint one completed scan. Only a completed scan ever reaches this function. */
@@ -866,14 +951,14 @@ window.addEventListener('pagehide', () => scanController?.abort());
 
 // The debounced results announcer already reports the filtered count; writing
 // a second live status message here would announce every filter twice.
-resultsSearch.addEventListener('input', renderResults);
-resultsSort.addEventListener('change', renderResults);
-resultsMin.addEventListener('change', renderResults);
+resultsSearch.addEventListener('input', onSearchInput);
+resultsSort.addEventListener('change', renderResultsNow);
+resultsMin.addEventListener('change', renderResultsNow);
 
 resetFilters.addEventListener('click', () => {
   resultsSearch.value = '';
   resultsMin.value = '2';
-  renderResults();
+  renderResultsNow();
   resultsSearch.focus();
   resultsFeedback.textContent = 'Search and filters cleared.';
 });
@@ -893,7 +978,7 @@ document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && target === resultsSearch) {
     if (resultsSearch.value) {
       resultsSearch.value = '';
-      renderResults();
+      renderResultsNow();
       resultsFeedback.textContent = '';
     } else {
       // Blurring would drop focus onto the body; the heading keeps keyboard users in the results.

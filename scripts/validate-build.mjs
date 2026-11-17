@@ -56,6 +56,31 @@ export async function validateBuild() {
     'production bundle must not reference other remote origins');
   const jsBytes = Buffer.byteLength(js);
   assert.ok(jsBytes < 128 * 1024, `popup.js is unexpectedly large (${jsBytes} bytes)`);
+  // The popup DOM contract: every id the source looks up must exist in the shipped
+  // HTML and in the shipped bundle, so a stale markup/bundle pairing cannot ship.
+  const src = await readFile('src/popup.ts', 'utf8');
+  const idRefPatterns = [
+    /\belement\s*(?:<[^>]*>)?\s*\(\s*(['"])([^'"]+)\1\s*\)/g,
+    /\bgetElementById\s*\(\s*(['"])([^'"]+)\1\s*\)/g,
+  ];
+  const sourceIds = new Set();
+  for (const pattern of idRefPatterns) {
+    for (const match of src.matchAll(pattern)) sourceIds.add(match[2]);
+  }
+  const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const htmlIds = [...html.matchAll(/(?:^|[\s<])id\s*=\s*(['"])([^'"]+)\1/g)].map((match) => match[2]);
+  const seenIds = new Set();
+  for (const id of htmlIds) {
+    assert.ok(!seenIds.has(id), `popup contract: duplicate id "${id}" in dist/popup.html`);
+    seenIds.add(id);
+  }
+  for (const id of sourceIds) {
+    const occurrences = (html.match(new RegExp(`(?:^|[\\s<])id\\s*=\\s*(['"])${escapeRegex(id)}\\1`, 'g')) || []).length;
+    assert.ok(occurrences > 0,
+      `popup contract: "${id}" is referenced by src/popup.ts but missing from dist/popup.html`);
+    assert.match(js, new RegExp(`(['"])${escapeRegex(id)}\\1`),
+      `popup contract: "${id}" is referenced by src/popup.ts but missing from dist/popup.js`);
+  }
   for (const size of [16, 32, 48, 128]) {
     const file = `icon-${size}.png`;
     assert.equal(manifest.icons[size], file);

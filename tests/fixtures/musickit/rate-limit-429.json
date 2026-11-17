@@ -1,0 +1,11 @@
+{
+  "response": {
+    "status": 429,
+    "headers": {
+      "retry-after": "2"
+    }
+  },
+  "data": {
+    "data": []
+  }
+}
