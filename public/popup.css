@@ -207,10 +207,10 @@ h1 span { display: block; }
 .playlist h2 { font-size: 11px; }
 #playlist-name, .has-results #playlist-name { font-size: 22px; line-height: 1.25; font-weight: 700; color: var(--ink); -webkit-line-clamp: 2; }
 .has-results main > * + * { margin-top: 10px; }
-#scan-summary { padding: 10px 0 4px; }
+#scan-summary { padding: 4px 0 2px; }
 #summary-title { font-size: 28px; line-height: 1.12; letter-spacing: -.8px; overflow-wrap: anywhere; }
-#summary-detail { margin: 10px 0 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
-#snapshot-note { margin: 5px 0 0; font-size: 11px; color: var(--muted); line-height: 1.4; }
+#summary-detail { margin: 6px 0 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
+#snapshot-note { margin: 2px 0 0; font-size: 11px; color: var(--muted); line-height: 1.3; }
 #coverage-note { margin: 10px 0 0; padding: 10px; background: var(--soft); border-left: 3px solid var(--accent); font-size: 12px; line-height: 1.5; }
 .actions { flex-wrap: wrap; }
 .actions > button { flex: 1 1 120px; width: auto; margin: 0; }
@@ -250,4 +250,10 @@ h1 span { display: block; }
 }
 
 .actions #scan.secondary { min-height: 44px; }
+/* popup.ts adds .secondary once a scan completes, but #scan stays the primary action:
+   keep its accent fill (and hover) and leave its disabled fill empty. Scope to #scan
+   so the other outlined .secondary buttons are untouched. */
+#scan.secondary:enabled { background: var(--action); color: #fff; }
+#scan.secondary:hover:enabled { background: var(--action-hover); }
+#scan.secondary:disabled { background: transparent; color: var(--muted); }
 .actions:has(#scan[hidden]) { display: none; }

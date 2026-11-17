@@ -89,7 +89,26 @@ try {
         setBadgeText: async ({ text, tabId }) => { window.__badge = text; window.__badgeTabId = tabId; },
         setBadgeBackgroundColor: async ({ tabId }) => { window.__badgeColorTabId = tabId; },
       },
-      windows: { create: async options => { window.__createdWindow = options; return {}; } },
+      windows: {
+        create: async options => {
+          const count = (Number(localStorage.getItem('amdf:test:createCount')) || 0) + 1;
+          localStorage.setItem('amdf:test:createCount', String(count));
+          window.__createCount = count;
+          window.__createdWindow = options;
+          const id = 100 + count;
+          window.__createdWindowId = id;
+          return { id };
+        },
+        get: async id => {
+          if (id === window.__closedWindowId) throw new Error(`No window with id: ${id}`);
+          return { id };
+        },
+        update: async (id, info) => {
+          window.__updatedWindow = { id, info };
+          localStorage.setItem('amdf:test:updatedWindow', JSON.stringify({ id, info }));
+        },
+        onRemoved: { addListener: listener => (window.__windowRemoved ??= []).push(listener) },
+      },
       tabs: {
         query: async () => [{ id: 1, url: await window.readPlayerUrl() }],
         get: async id => ({ id, url: await window.readPlayerUrl() }),
@@ -166,6 +185,10 @@ try {
         ['Scanning playlist', 'Checking playlist', 'Scan complete']);
       assert.match(announced[0], /Connecting to Apple Music…/);
       assert.match(await popup.locator('#status-detail').textContent(), /245 songs checked · 1 repeated song · 2 extra copies/);
+      // The scan timestamp is visible in the summary without opening Scan details.
+      assert.equal(await popup.locator('#scan-details').evaluate(el => el.open), false);
+      assert.equal(await popup.locator('#snapshot-note').isVisible(), true);
+      assert.match(await popup.locator('#snapshot-note').textContent(), /^Scan from /);
       // Progress is visual; only phase changes reach the dedicated announcer.
       assert.equal(await popup.locator('#status').getAttribute('aria-live'), null);
       await popup.waitForFunction(() => /Scan complete/.test(document.querySelector('#status-announcer').textContent));
@@ -199,6 +222,28 @@ try {
       assert.equal(await popup.getByRole('contentinfo').count(), 1);
       assert.equal(await popup.locator('#results-title').textContent(), 'Repeated songs · 1');
       assert.equal(await popup.locator('#scan').textContent(), 'Scan again');
+      // The primary action keeps its accent after a completed scan even though
+      // popup.ts adds .secondary; other .secondary buttons stay outlined.
+      const scanAccent = () => popup.evaluate(() => {
+        const scan = document.querySelector('#scan');
+        const computed = getComputedStyle(scan);
+        return {
+          background: computed.backgroundColor,
+          color: computed.color,
+          disabled: scan.disabled,
+          secondary: scan.classList.contains('secondary'),
+        };
+      });
+      const assertScanAccent = style => {
+        assert.equal(style.background, 'rgb(199, 40, 78)');
+        assert.equal(style.color, 'rgb(255, 255, 255)');
+        assert.equal(style.disabled, false);
+        assert.equal(style.secondary, true);
+      };
+      await assertScanAccent(await scanAccent());
+      await popup.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
+      await assertScanAccent(await scanAccent());
+      await popup.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
       assert.equal(await popup.evaluate(() => window.__badge), '1');
       const paths = await apple.evaluate(() => window.requests);
       // Connect metadata (reused as the baseline) + 3 track pages + validation metadata.
@@ -951,6 +996,32 @@ try {
     assert.equal(await popup.locator('#clear-results').isVisible(), true, 'Clear results is available in Settings');
     await popup.evaluate(() => window.scrollTo(0, 0));
 
+    // Search responsiveness: a burst of keystrokes must not rebuild the whole
+    // list once per character. Count replaceChildren calls on #duplicate-list
+    // while typing eight characters; the debounce yields at most two renders
+    // (one leading, one trailing), not eight.
+    await popup.evaluate(() => {
+      const resultList = document.querySelector('#duplicate-list');
+      window.__listRebuilds = 0;
+      window.__originalReplaceChildren = Element.prototype.replaceChildren;
+      Element.prototype.replaceChildren = function (...nodes) {
+        if (this === resultList) window.__listRebuilds++;
+        return window.__originalReplaceChildren.apply(this, nodes);
+      };
+    });
+    await popup.locator('#results-search').focus();
+    await popup.keyboard.type('abcdefgh', { delay: 15 });
+    await popup.waitForTimeout(250);
+    const listRebuilds = await popup.evaluate(() => {
+      Element.prototype.replaceChildren = window.__originalReplaceChildren;
+      return window.__listRebuilds;
+    });
+    assert.ok(listRebuilds >= 1, 'search must rebuild the list at least once');
+    assert.ok(listRebuilds <= 2,
+      `eight search characters rebuilt the list ${listRebuilds} times; expected at most 2 (leading + trailing)`);
+    console.log(`Search debounce (${apiMode}): eight characters rebuilt the list ${listRebuilds} time(s)`);
+    await popup.locator('#results-search').fill('');
+
     await open('fiftyOne');
     await scan();
     assert.equal(await popup.locator('#duplicate-list li').count(), 50);
@@ -1261,6 +1332,35 @@ try {
   assert.ok(created, 'pop-out should create a window');
   assert.match(created.url, /popup\.html\?tab=1$/);
   assert.equal(created.width, 400);
+  const createdId = await popup.evaluate(() => window.__createdWindowId);
+  assert.equal(await popup.evaluate(() => localStorage.getItem('amdf:popout-window:v1')), String(createdId),
+    'the window id is persisted for the next popup session');
+  // A second pop-out click focuses the window that is already open, without creating another.
+  await popup.locator('#pop-out').click();
+  await popup.waitForFunction(() => window.__updatedWindow);
+  assert.equal(await popup.evaluate(() => window.__createCount), 1, 'two clicks must create only one window');
+  const focused = await popup.evaluate(() => window.__updatedWindow);
+  assert.equal(focused.id, createdId);
+  assert.deepEqual(focused.info, { focused: true });
+  // Reopening the toolbar popup is a new JS context. The persisted id must still find the window.
+  await popup.goto(popupUrl);
+  await popup.waitForFunction(() => !document.querySelector('#pop-out').hidden);
+  await popup.locator('#pop-out').click();
+  await popup.waitForFunction(() => localStorage.getItem('amdf:test:updatedWindow'));
+  assert.equal(await popup.evaluate(() => localStorage.getItem('amdf:test:createCount')), '1',
+    'a new popup session must not create another window');
+  const reloadedFocus = await popup.evaluate(() => JSON.parse(localStorage.getItem('amdf:test:updatedWindow')));
+  assert.equal(reloadedFocus.id, createdId);
+  assert.deepEqual(reloadedFocus.info, { focused: true });
+  // Removing that window clears the saved id, so the next click opens a fresh one.
+  await popup.evaluate(id => window.__windowRemoved.forEach(listener => listener(id)), createdId);
+  await popup.locator('#pop-out').click();
+  assert.equal(await popup.evaluate(() => window.__createCount), 2, 'a closed window is replaced by a new one');
+  // A get that throws (window already gone) clears the id and opens a fresh one too.
+  await popup.evaluate(() => { chrome.windows.get = async () => { throw new Error('No window'); }; });
+  await popup.locator('#pop-out').click();
+  assert.equal(await popup.evaluate(() => window.__createCount), 3, 'a vanished window is replaced by a new one');
+  await popup.evaluate(() => { chrome.windows.get = async id => ({ id }); });
   await popup.goto(created.url);
   await popup.waitForFunction(() => document.querySelector('#playlist-name').textContent.includes('My playlist'));
   assert.equal(await popup.locator('#pop-out').isVisible(), false);

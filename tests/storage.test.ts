@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { cacheFreshness, clearCachedScan, loadCachedScan, loadScanWindowPreference, loadThemePreference, saveCachedScan, saveScanWindowPreference, saveThemePreference, type CachedScan } from '../src/storage';
+import { cacheFreshness, clearCachedScan, loadCachedScan, loadPopoutWindowId, loadScanWindowPreference, loadThemePreference, saveCachedScan, savePopoutWindowId, saveScanWindowPreference, saveThemePreference, type CachedScan } from '../src/storage';
 import type { DuplicateGroup } from '../src/types';
 
 const values = new Map<string, string>();
@@ -186,6 +186,21 @@ test('cache freshness treats a changed known total as a playlist change', () => 
   assert.equal(cacheFreshness({ ...scan, totalTracks: 245 }, info), 'unknown');
   assert.equal(cacheFreshness({ ...scan, totalTracks: 244 }, info), 'changed');
   assert.equal(cacheFreshness({ ...scan, totalTracks: 245, modified: 'm' }, { ...info, modified: 'm' }), 'current');
+});
+
+test('the pop-out window id survives a reload and rejects bad values', () => {
+  values.delete('amdf:popout-window:v1');
+  assert.equal(loadPopoutWindowId(), null);
+  savePopoutWindowId(123);
+  assert.equal(loadPopoutWindowId(), 123);
+  values.set('amdf:popout-window:v1', 'not-a-number');
+  assert.equal(loadPopoutWindowId(), null);
+  values.set('amdf:popout-window:v1', '0');
+  assert.equal(loadPopoutWindowId(), null);
+  savePopoutWindowId(456);
+  assert.equal(loadPopoutWindowId(), 456);
+  savePopoutWindowId(null);
+  assert.equal(loadPopoutWindowId(), null);
 });
 
 test('metadata markers survive a cache round-trip', () => {

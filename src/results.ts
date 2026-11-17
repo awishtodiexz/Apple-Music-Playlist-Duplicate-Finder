@@ -113,7 +113,9 @@ export function lookalikeIdentities(groups: readonly DuplicateGroup[]): Set<stri
   const byKey = new Map<string, DuplicateGroup[]>();
   for (const group of groups) {
     const key = groupKey(group);
-    byKey.set(key, [...(byKey.get(key) ?? []), group]);
+    const sharing = byKey.get(key);
+    if (sharing) sharing.push(group);
+    else byKey.set(key, [group]);
   }
   const lookalikes = new Set<string>();
   for (const sharing of byKey.values()) {
