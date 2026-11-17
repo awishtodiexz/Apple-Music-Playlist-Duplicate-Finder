@@ -19,6 +19,7 @@
     "package": "npm run build && node scripts/package.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node scripts/test.mjs",
+    "coverage": "node scripts/coverage.mjs",
     "test:browser": "npm run build && node scripts/browser-test.mjs",
     "test:extension": "npm run build && node scripts/extension-smoke.mjs",
     "test:package": "npm run package && node scripts/package-test.mjs",
@@ -34,6 +35,7 @@
   "devDependencies": {
     "@types/chrome": "^0.3.7",
     "@types/node": "^22.20.5",
+    "c8": "10.1.3",
     "esbuild": "^0.28.2",
     "fflate": "0.8.3",
     "playwright": "^1.65.0",
