@@ -41,6 +41,12 @@ test('a cached scan round-trips only for the same playlist', () => {
   assert.equal(loadCachedScan('p.other'), null);
 });
 
+test('a cached scan round-trips exact library IDs for rescan comparisons', () => {
+  const aliased = { ...scan, groups: [{ ...group, libraryIds: ['i.first', 'i.second'] }] };
+  assert.equal(saveCachedScan(aliased), true);
+  assert.deepEqual(loadCachedScan('p.fixture'), aliased);
+});
+
 test('v1.2.5 cache and theme storage remain readable without migration', () => {
   // v1.2.5 wrote these exact keys and CachedScan version 1. Keep existing
   // users' cached last scan and theme preference across the 1.3.0 update.
@@ -90,6 +96,11 @@ test('schema-inconsistent cached scans are rejected', () => {
     }],
     ['invalid scan timestamp', { ...scan, scannedAt: 0 }],
     ['oversized song text', { ...scan, groups: [{ ...group, name: 'x'.repeat(2001) }] }],
+    ['aliases on a library-only group', { ...scan, groups: [{ ...group, identity: 'library:i.one', libraryIds: ['i.one'] }] }],
+    ['aliases are not an array', { ...scan, groups: [{ ...group, libraryIds: 'i.one' }] }],
+    ['more aliases than copies', { ...scan, groups: [{ ...group, libraryIds: ['i.a', 'i.b', 'i.c', 'i.d'] }] }],
+    ['invalid library IDs', { ...scan, groups: [{ ...group, libraryIds: ['1001'] }] }],
+    ['repeated library IDs', { ...scan, groups: [{ ...group, libraryIds: ['i.one', 'i.one'] }] }],
   ];
   for (const [label, value] of cases) {
     writeRawCache(value);
@@ -131,6 +142,68 @@ test('a full 50,000-track result set fits the cache', () => {
   }));
   assert.equal(saveCachedScan({ ...scan, groups, totalTracks: 50_000 }), true);
   assert.equal(loadCachedScan('p.fixture')?.groups.length, 25_000);
+});
+
+test('a 50,000-track cache saves without library IDs when they push it over the size cap', () => {
+  let position = 0;
+  const groups = Array.from({ length: 16_000 }, (_, index) => {
+    const copies = index < 2_000 ? 4 : 3;
+    return {
+      ...group,
+      identity: `catalog:1${String(index).padStart(127, '0')}`,
+      positions: Array.from({ length: copies }, () => ++position),
+      copies,
+      extraCopies: copies - 1,
+    };
+  });
+  assert.equal(position, 50_000);
+  const compact = { ...scan, groups, totalTracks: position };
+  const aliased = {
+    ...compact,
+    groups: groups.map(group => ({
+      ...group, libraryIds: group.positions.map(position => `i.${String(position).padStart(126, 'a')}`),
+    })),
+  };
+  const compactRaw = JSON.stringify(compact);
+  assert.ok(compactRaw.length <= 4_500_000);
+  assert.ok(JSON.stringify(aliased).length > 4_500_000);
+  assert.equal(saveCachedScan(compact), true);
+  assert.equal(saveCachedScan(aliased), true);
+  assert.equal(values.get('amdf:last-scan:v1'), compactRaw);
+  assert.deepEqual(loadCachedScan('p.fixture'), compact);
+  assert.equal(aliased.groups[0]?.libraryIds.length, 4);
+});
+
+test('a storage quota error retries with the original payload size', t => {
+  const compactRaw = JSON.stringify(scan);
+  const aliased = { ...scan, groups: [{ ...group, libraryIds: ['i.one'] }] };
+  const { setItem } = localStorage;
+  const writes = t.mock.method(localStorage, 'setItem', (key: string, value: string) => {
+    if (value.length > compactRaw.length) throw new DOMException('Storage quota exceeded', 'QuotaExceededError');
+    setItem(key, value);
+  });
+  assert.equal(saveCachedScan(aliased), true);
+  assert.equal(writes.mock.callCount(), 2);
+  assert.equal(values.get('amdf:last-scan:v1'), compactRaw);
+});
+
+test('if both cache writes fail, the superseded scan is removed and nothing is saved', t => {
+  const cacheKey = 'amdf:last-scan:v1';
+  assert.equal(saveCachedScan(scan), true);
+  assert.deepEqual(loadCachedScan('p.fixture'), scan);
+  const compact = { ...scan, scannedAt: scan.scannedAt + 60_000 };
+  const aliased = { ...compact, groups: [{ ...group, libraryIds: ['i.one'] }] };
+  const writes = t.mock.method(localStorage, 'setItem', () => {
+    throw new DOMException('Storage quota exceeded', 'QuotaExceededError');
+  });
+
+  assert.equal(saveCachedScan(aliased), false);
+  assert.deepEqual(writes.mock.calls.map(call => call.arguments), [
+    [cacheKey, JSON.stringify(aliased)],
+    [cacheKey, JSON.stringify(compact)],
+  ]);
+  assert.equal(values.has(cacheKey), false);
+  assert.equal(loadCachedScan('p.fixture'), null);
 });
 
 test('a completed scan replaces the previous cached scan', () => {

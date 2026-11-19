@@ -40,5 +40,10 @@ export function findDuplicates(tracks: readonly Track[]): DuplicateResult {
     }
   }
   const groups = [...byIdentity.values()].filter(group => group.copies > 1);
+  for (const [libraryId, catalogId] of libraryToCatalog) {
+    if (!catalogId) continue;
+    const group = byIdentity.get(`catalog:${catalogId}`);
+    if (group && group.copies > 1) (group.libraryIds ??= []).push(libraryId);
+  }
   return { groups, extraCopies: groups.reduce((sum, group) => sum + group.extraCopies, 0), unidentified };
 }

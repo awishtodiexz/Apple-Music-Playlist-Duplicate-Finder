@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
+import { findDuplicates } from '../src/duplicates';
 import { musicKitBridge } from '../src/musickit-bridge';
+import { compareScans, comparisonText } from '../src/results';
 import type { BridgeRequest, TrackPage } from '../src/types';
 
 type Reply = Awaited<ReturnType<typeof musicKitBridge>>;
@@ -81,6 +83,32 @@ test('legacy and nested tracks fixtures resolve three ordered tracks', async () 
       return fixture(name);
     });
     expectPage(reply, null);
+  }
+});
+
+test('MusicKit scans do not report a repeat as resolved or new when catalog metadata changes', async () => {
+  const legacy = fixture('legacy-tracks') as {
+    json: { data: Array<{ id: string; attributes: { name: string; artistName: string; playParams?: { catalogId: string } } }> };
+  };
+  const [first, , third] = legacy.json.data;
+  assert.ok(first && third);
+  const { name, artistName } = first.attributes;
+  async function scan(tracks: typeof legacy.json.data) {
+    const page = expectPage(await readVia(tracksRequest, path => {
+      assert.equal(path, tracksPath);
+      return { json: { ...legacy.json, data: tracks } };
+    }), null);
+    const result = findDuplicates(page.tracks);
+    assert.equal(result.unidentified, 0);
+    assert.deepEqual(result.groups.map(group => group.positions), [[1, 2]]);
+    return result.groups;
+  }
+  const librarySong = { ...first, attributes: { name, artistName } };
+  const library = await scan([librarySong, librarySong, third]);
+  const catalog = await scan([first, librarySong, third]);
+  assert.deepEqual([library[0]?.identity, catalog[0]?.identity], ['library:i.fixture-1', 'catalog:1001']);
+  for (const [previous, current] of [[library, catalog], [catalog, library]] as const) {
+    assert.match(comparisonText(compareScans(previous, current)), /0 songs no longer repeated · 0 new repeated songs/);
   }
 });
 

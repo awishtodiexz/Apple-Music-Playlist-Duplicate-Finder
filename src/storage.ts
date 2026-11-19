@@ -89,6 +89,11 @@ function isGroup(value: unknown): value is DuplicateGroup {
     group.extraCopies !== group.copies - 1) return false;
   if (!Array.isArray(group.positions) || group.positions.length !== group.copies ||
     group.positions.length > maxTracks) return false;
+  const { libraryIds } = group;
+  if (libraryIds !== undefined && (!/^catalog:\d{1,128}$/.test(group.identity) ||
+    !Array.isArray(libraryIds) || libraryIds.length > group.copies ||
+    libraryIds.some(id => typeof id !== 'string' || id.length > 128 || !/^i\.[A-Za-z0-9-]+$/.test(id)) ||
+    new Set(libraryIds).size !== libraryIds.length)) return false;
   let previous = 0;
   for (const position of group.positions) {
     if (!isPosition(position) || position <= previous) return false;
@@ -155,26 +160,31 @@ export function loadCachedScan(playlistId: string, storefront: string | null = n
   }
 }
 
+function writeCachedScan(store: Storage, raw: string): boolean {
+  if (raw.length > maxCacheChars) return false;
+  try {
+    store.setItem(cacheKey, raw);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Returns false when the result is too large or storage is unavailable; never throws. */
 export function saveCachedScan(scan: CachedScan): boolean {
   const store = storage();
   if (!store) return false;
   try {
     if (!isCachedScan(scan)) { discardCached(store); return false; }
-    const raw = JSON.stringify(scan);
-    if (raw.length > maxCacheChars) {
-      // The new completed scan supersedes any older cache. Keeping the old data
-      // would present a superseded scan as "the last scan" after a reopen.
-      discardCached(store);
-      return false;
+    if (writeCachedScan(store, JSON.stringify(scan))) return true;
+    if (scan.groups.some(group => group.libraryIds !== undefined)) {
+      const groups = scan.groups.map(({ libraryIds, ...group }) => group);
+      if (writeCachedScan(store, JSON.stringify({ ...scan, groups }))) return true;
     }
-    store.setItem(cacheKey, raw);
-    return true;
-  } catch {
-    // Never leave a superseded cache behind when the replacement failed.
-    discardCached(store);
-    return false;
-  }
+  } catch { /* ignore */ }
+  // Never leave a superseded cache behind when the replacement failed.
+  discardCached(store);
+  return false;
 }
 
 export function clearCachedScan(): void {

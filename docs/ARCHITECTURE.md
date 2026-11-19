@@ -27,7 +27,7 @@ The last completed scan and the theme choice are kept in `localStorage` (`amdf:l
 
 The scan-window preference is saved separately (`amdf:scan-window:v1`) and defaults to a separate window. The popup hands a scan to a window pinned to the source tab. Its startup request is consumed once and checked against the connected playlist before scanning. Reloading the window restores results without starting another scan.
 
-Rescan comparisons use exact duplicate identities from the previous completed scan, including a restored cached scan. They are shown for the current session and withheld when either scan contains unidentified songs.
+Rescan comparisons use exact duplicate identities from the previous completed scan, including a restored cached scan. If a group gains or loses its catalog ID, a one-to-one match on a known library song ID keeps it from being labeled resolved or new. The cache may omit these optional library IDs to fit within storage limits. Comparisons are shown for the current session and withheld when either scan contains unidentified songs.
 
 ## Limitations
 
