@@ -71,6 +71,7 @@ const copiedMs = 2_000;
  */
 interface CompletedScan {
   playlistName: string;
+  storefront: string | null;
   scannedAt: number;
   groups: DuplicateGroup[];
   totalTracks: number;
@@ -651,6 +652,7 @@ function scanNotesText(summary: ResultSummary, countVerified: boolean, modificat
 function restoreCached(cached: CachedScan): CompletedScan {
   const completed: CompletedScan = {
     playlistName: cached.playlistName,
+    storefront: cached.storefront ?? null,
     scannedAt: cached.scannedAt,
     groups: cached.groups,
     totalTracks: cached.totalTracks,
@@ -702,7 +704,7 @@ function cacheCurrent(playlist: PlaylistRef, info: PlaylistInfo, countVerified: 
   const cached: CachedScan = {
     version: 1,
     playlistId: playlist.id,
-    storefront: playlist.kind === 'catalog' ? playlist.storefront : null,
+    storefront: playlist.kind === 'catalog' ? info.storefront : null,
     playlistName: info.name,
     scannedAt,
     groups,
@@ -849,9 +851,9 @@ async function initialize(): Promise<void> {
     const playlist = detectPlaylist(tab.url ?? '');
     shownPlaylist = playlist;
     const candidate = createBrowserSource(tab.id, playlist);
-    // A cached scan does not need the player, so paint it before the round trip:
-    // a slow, signed-out or unreachable MusicKit must not hide existing results.
-    const cached = loadCachedScan(playlist.id, playlist.storefront);
+    // A regionless catalog route needs MusicKit to establish its cache identity.
+    // Explicit routes and library playlists can paint before the round trip.
+    let cached = loadCachedScan(playlist.id, playlist.storefront);
     if (cached) {
       const restored = restoreCached(cached);
       showPlaylistName(cached.playlistName, cached.playlistName);
@@ -861,6 +863,10 @@ async function initialize(): Promise<void> {
       setBadge(null);
     }
     const info = await candidate.metadata();
+    if (playlist.kind === 'catalog' && playlist.storefront === null) {
+      cached = loadCachedScan(playlist.id, info.storefront);
+      if (cached) restoreCached(cached);
+    }
     currentPlaylistName = info.name;
     showPlaylistName(info.name, info.name);
     // Fail here rather than on a scan that could only fail the same way.
@@ -1057,7 +1063,8 @@ async function startScan(): Promise<void> {
   busy = true;
   failure = null;
   const age = Date.now() - pendingInfoAt;
-  const baselineInfo = pendingInfo && age >= 0 && age <= pendingInfoMaxAgeMs ? pendingInfo : undefined;
+  const regionlessCatalog = currentPlaylist.kind === 'catalog' && currentPlaylist.storefront === null;
+  const baselineInfo = !regionlessCatalog && pendingInfo && age >= 0 && age <= pendingInfoMaxAgeMs ? pendingInfo : undefined;
   pendingInfo = null;
   updatePopOut();
   const controller = new AbortController();
@@ -1082,8 +1089,17 @@ async function startScan(): Promise<void> {
   setStatus('Scanning playlist…', `Connecting to Apple Music…${keepNote}`, { phase: 'reading' });
   // The first page shows at once; after that, steady reading updates are throttled.
   let lastReading = 0;
+  let scanStorefront: string | undefined;
+  const scanSource = source;
   try {
-    const result = await readPlaylist(source, event => {
+    const result = await readPlaylist({
+      ...scanSource,
+      metadata: async signal => {
+        const info = await scanSource.metadata(signal);
+        scanStorefront = info.storefront;
+        return info;
+      },
+    }, event => {
       const timestamp = Date.now();
       if (event.phase === 'reading' && lastReading > 0 && timestamp - lastReading < statusThrottleMs) return;
       lastReading = event.phase === 'reading' && event.retrieved > 0 ? timestamp : 0;
@@ -1105,7 +1121,9 @@ async function startScan(): Promise<void> {
     // Without results on screen, the caveats have nowhere else to go.
     const notesInStatus = duplicates.groups.length === 0 && scanNotes ? `\n${scanNotes}` : '';
     const scannedAt = Date.now();
-    const previous = lastCompleted;
+    const storefront = currentPlaylist.kind === 'catalog' ? result.info.storefront! : null;
+    const previous = (currentPlaylist.kind !== 'catalog' || lastCompleted?.storefront === storefront ? lastCompleted : null) ??
+      (regionlessCatalog ? loadCachedScan(currentPlaylist.id, storefront) : null);
     const comparison: CompletedScan['comparison'] = previous === null ? null :
       previous.unidentified > 0 || unidentified > 0 ? { kind: 'unavailable', previousAt: previous.scannedAt } :
         { kind: 'compared', previousAt: previous.scannedAt, data: compareScans(previous.groups, duplicates.groups) };
@@ -1115,6 +1133,7 @@ async function startScan(): Promise<void> {
     // Only this completed, fully validated scan may replace the last success.
     applyCompleted({
       playlistName: result.info.name,
+      storefront,
       scannedAt,
       groups: duplicates.groups,
       totalTracks,
@@ -1126,6 +1145,9 @@ async function startScan(): Promise<void> {
     const saved = cacheCurrent(currentPlaylist, result.info, result.countVerified, result.modificationChecked, scannedAt);
     if (lastCompleted) lastCompleted.cached = saved;
   } catch (error) {
+    if (regionlessCatalog && scanStorefront !== undefined && lastCompleted?.storefront !== scanStorefront) {
+      lastCompleted = null;
+    }
     // A failed or cancelled scan never replaces the last completed result. When
     // one exists, restore it and state plainly that it is not this scan's output.
     if (!lastCompleted) clearGroups();

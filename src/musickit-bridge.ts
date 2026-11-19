@@ -335,6 +335,7 @@ export async function musicKitBridge(request: BridgeRequest): Promise<BridgeRepl
         total: attrTotal ?? relationshipTotal,
         modified: typeof attrs!.lastModifiedDate === 'string' && attrs!.lastModifiedDate.trim() ? attrs!.lastModifiedDate.slice(0, 2000) : null,
       };
+      if (playlist.kind === 'catalog') info.storefront = storefront!;
       // Observed on some Apple playlist resources; not a guaranteed snapshot token.
       const revision = obj(attrs!.playParams)?.versionHash;
       if (typeof revision === 'string' && revision.trim()) info.revision = revision.slice(0, 2000);
