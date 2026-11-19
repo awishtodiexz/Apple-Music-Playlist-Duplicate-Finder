@@ -28,7 +28,7 @@ Run `npm run build`, then load `dist/` from `chrome://extensions` with **Load un
 | `npm run benchmark` | CPU timings for reading, matching and CSV at 1k, 10k and 50k tracks |
 | `npm run audit` | `npm audit`, failing at high severity and above |
 
-The browser tests use mocked responses, so no Apple Music account is needed. Set `CHROMIUM_PATH` to use a different browser for `test:browser`. CI runs the unit tests on every supported Node version and the full check on Linux and Windows.
+The browser tests use mocked responses, so no Apple Music account is needed. Set `CHROMIUM_PATH` to use a different browser for `test:browser`. CI runs the unit tests on every supported Node version and the full check on Linux and Windows. The Linux Node 24 job also runs `npm run coverage`.
 
 ## Repository layout
 
