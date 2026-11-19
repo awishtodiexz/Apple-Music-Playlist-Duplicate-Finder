@@ -287,6 +287,15 @@ try {
       await popup.screenshot({ path: process.env.AMDF_EVIDENCE_DIR + '/regionless-restored-' + apiMode + '.png', fullPage: true });
     }
     await apple.evaluate(() => { window.storefrontId = 'gb'; });
+    const usSnapshot = await popup.evaluate(() => localStorage.getItem('amdf:last-scan:v1'));
+    await apple.evaluate(() => { window.scenario = 'internal'; });
+    await scan();
+    assert.equal(await popup.locator('#status-title').textContent(), 'Scan failed');
+    assert.equal(await popup.locator('#results').isVisible(), false);
+    assert.equal(await popup.evaluate(() => window.__badge), '');
+    assert.equal(await popup.evaluate(() => localStorage.getItem('amdf:last-scan:v1')), usSnapshot);
+    console.log(`PASS (${apiMode}): failed gb rescan hides us results and badge without deleting us cache`);
+    await apple.evaluate(() => { window.scenario = 'duplicates'; });
     await apple.evaluate(() => { window.requests = []; });
     await scan();
     assert.equal(await popup.locator('#status-title').textContent(), 'Scan complete');
@@ -303,6 +312,24 @@ try {
     await popup.goto(popupUrl);
     await popup.waitForFunction(() => document.querySelector('#status-title').textContent === 'Ready to scan');
     assert.equal(await popup.locator('#results').isVisible(), false);
+    await apple.evaluate(() => { window.storefrontId = 'gb'; });
+    await scan();
+    assert.equal(await popup.locator('#status-title').textContent(), 'Scan complete');
+    assert.equal(await popup.locator('#scan-comparison').isVisible(), true);
+    assert.match(await popup.locator('#scan-comparison').textContent(), /Compared with scan from/);
+    // The same fallback baseline must retain the unidentified-song comparison guard.
+    await popup.evaluate(() => {
+      const cached = JSON.parse(localStorage.getItem('amdf:last-scan:v1'));
+      cached.unidentified = 1;
+      localStorage.setItem('amdf:last-scan:v1', JSON.stringify(cached));
+    });
+    await apple.evaluate(() => { window.storefrontId = 'us'; });
+    await popup.goto(popupUrl);
+    await popup.waitForFunction(() => document.querySelector('#status-title').textContent === 'Ready to scan');
+    await apple.evaluate(() => { window.storefrontId = 'gb'; });
+    await scan();
+    assert.match(await popup.locator('#scan-comparison').textContent(), /changes cannot be confirmed/);
+    console.log(`PASS (${apiMode}): newly resolved storefront finds stored comparison and honors unidentified songs`);
     await apple.evaluate(() => { window.scenario = 'unavailable'; });
     await popup.goto(popupUrl);
     await popup.waitForFunction(() => document.querySelector('#status-title').textContent === 'Could not connect');

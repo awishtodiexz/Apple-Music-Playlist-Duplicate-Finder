@@ -1089,8 +1089,17 @@ async function startScan(): Promise<void> {
   setStatus('Scanning playlist…', `Connecting to Apple Music…${keepNote}`, { phase: 'reading' });
   // The first page shows at once; after that, steady reading updates are throttled.
   let lastReading = 0;
+  let scanStorefront: string | undefined;
+  const scanSource = source;
   try {
-    const result = await readPlaylist(source, event => {
+    const result = await readPlaylist({
+      ...scanSource,
+      metadata: async signal => {
+        const info = await scanSource.metadata(signal);
+        scanStorefront = info.storefront;
+        return info;
+      },
+    }, event => {
       const timestamp = Date.now();
       if (event.phase === 'reading' && lastReading > 0 && timestamp - lastReading < statusThrottleMs) return;
       lastReading = event.phase === 'reading' && event.retrieved > 0 ? timestamp : 0;
@@ -1113,7 +1122,8 @@ async function startScan(): Promise<void> {
     const notesInStatus = duplicates.groups.length === 0 && scanNotes ? `\n${scanNotes}` : '';
     const scannedAt = Date.now();
     const storefront = currentPlaylist.kind === 'catalog' ? result.info.storefront! : null;
-    const previous = currentPlaylist.kind !== 'catalog' || lastCompleted?.storefront === storefront ? lastCompleted : null;
+    const previous = (currentPlaylist.kind !== 'catalog' || lastCompleted?.storefront === storefront ? lastCompleted : null) ??
+      (regionlessCatalog ? loadCachedScan(currentPlaylist.id, storefront) : null);
     const comparison: CompletedScan['comparison'] = previous === null ? null :
       previous.unidentified > 0 || unidentified > 0 ? { kind: 'unavailable', previousAt: previous.scannedAt } :
         { kind: 'compared', previousAt: previous.scannedAt, data: compareScans(previous.groups, duplicates.groups) };
@@ -1135,6 +1145,9 @@ async function startScan(): Promise<void> {
     const saved = cacheCurrent(currentPlaylist, result.info, result.countVerified, result.modificationChecked, scannedAt);
     if (lastCompleted) lastCompleted.cached = saved;
   } catch (error) {
+    if (regionlessCatalog && scanStorefront !== undefined && lastCompleted?.storefront !== scanStorefront) {
+      lastCompleted = null;
+    }
     // A failed or cancelled scan never replaces the last completed result. When
     // one exists, restore it and state plainly that it is not this scan's output.
     if (!lastCompleted) clearGroups();
