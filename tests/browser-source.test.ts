@@ -21,6 +21,8 @@ test('each regionless scan re-resolves MusicKit while its pages remain pinned', 
   storefront = 'gb';
   assert.equal((await readPlaylist(source)).info.storefront, 'gb');
   assert.deepEqual(requests.map(request => request.playlist.storefront), [null, 'us', 'us', null, 'gb', 'gb']);
+  assert.deepEqual(requests.map(request => 'expectedPlayerStorefront' in request ? request.expectedPlayerStorefront : undefined),
+    [undefined, 'us', 'us', undefined, 'gb', 'gb']);
 });
 test('catalog metadata requires a validated storefront and pins subsequent reads to it', async () => {
   const catalog = { id: 'pl.test', kind: 'catalog' as const, storefront: null };
