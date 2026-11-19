@@ -10,6 +10,7 @@
 
 ### Changed
 
+- Upgrade c8 to 11.0.0 with patched glob/minimatch overrides and run the coverage gate in CI on Linux Node 24.
 - Fast typing in the search box coalesces into one list rebuild per burst instead of one per character.
 - Same-title duplicate detection is linear; 25,000 same-title songs group in milliseconds instead of roughly 0.75 seconds.
 - The scan timestamp is visible next to the results without opening Scan details.

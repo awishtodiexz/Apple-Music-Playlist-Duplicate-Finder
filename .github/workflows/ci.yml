@@ -41,6 +41,9 @@ jobs:
       - name: Typecheck, unit tests, fixtures, installed extension, production build and package verification
         if: matrix.node == '24'
         run: npm run check
+      - name: Source coverage line and branch gates
+        if: matrix.node == '24'
+        run: npm run coverage
       - name: Benchmark reader, matcher, CSV, filter/sort and cancellation CPU paths
         if: matrix.node == '24'
         run: npm run benchmark
