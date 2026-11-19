@@ -599,8 +599,7 @@ function applyCompleted(completed: CompletedScan): void {
   renderResults();
   renderSummary();
   if (changed) scanDetails.open = false;
-  // An empty playlist can still have a comparison to clear.
-  clearResults.hidden = completed.totalTracks === 0 && completed.comparison === null;
+  clearResults.hidden = !completed.cached && completed.totalTracks === 0 && completed.comparison === null;
 }
 
 resolvedDetails.addEventListener('toggle', () => {
@@ -711,7 +710,7 @@ function cacheCurrent(playlist: PlaylistRef, info: PlaylistInfo, countVerified: 
   };
   const saved = saveCachedScan(cached);
   if (!saved) resultsFeedback.textContent = tooLargeToKeep;
-  clearResults.hidden = (totalTracks === 0 || (groups.length === 0 && !saved)) && !lastCompleted?.comparison;
+  clearResults.hidden = groups.length === 0 && !saved && !lastCompleted?.comparison;
   return saved;
 }
 

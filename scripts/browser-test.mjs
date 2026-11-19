@@ -663,11 +663,22 @@ try {
       assert.equal(await popup.locator('#status').getAttribute('data-error'), 'false');
       assert.equal(await popup.locator('#results').isVisible(), false);
       assert.equal(await popup.locator('#scan').textContent(), 'Scan again');
-      // An empty playlist has nothing to clear; a checked one keeps its saved scan.
       await openSettings();
-      assert.equal(await popup.locator('#clear-results').isVisible(), scenario !== 'empty');
+      assert.equal(await popup.locator('#clear-results').isVisible(), true);
+      if (scenario === 'empty') {
+        assert.notEqual(await popup.evaluate(() => localStorage.getItem('amdf:last-scan:v1')), null);
+        await popup.goto(popupUrl);
+        await popup.getByRole('heading', { name: 'Showing last scan' }).waitFor();
+        await popup.waitForFunction(() => document.querySelector('#scan').textContent === 'Scan again');
+        await openSettings();
+        await popup.getByRole('button', { name: 'Clear results' }).click();
+        await popup.getByRole('heading', { name: 'Results cleared' }).waitFor();
+        assert.equal(await popup.evaluate(() => localStorage.getItem('amdf:last-scan:v1')), null);
+        assert.equal(await popup.locator('#scan-summary').isVisible(), false);
+        assert.equal(await popup.locator('#clear-results').isVisible(), false);
+      }
     }
-    console.log(`PASS (${apiMode}): empty and no-duplicates popup states`);
+    console.log(`PASS (${apiMode}): empty and no-duplicates popup states; empty scan reopens and clears persisted metadata`);
 
     await open('distinct');
     await scan();

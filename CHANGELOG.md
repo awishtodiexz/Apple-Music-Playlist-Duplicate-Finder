@@ -17,6 +17,7 @@
 
 ### Fixed
 
+- Completed empty-playlist scans keep **Clear results** available after reopening, so their saved playlist metadata can be removed.
 - The primary **Scan again** button keeps its accent after a completed scan instead of rendering as an outlined secondary button.
 
 ## [1.6.2](https://github.com/awishtodiexz/Apple-Music-Playlist-Duplicate-Finder/releases/tag/v1.6.2) (2026-11-14)
