@@ -650,7 +650,34 @@ try {
     assert.equal(await popup.locator('#duplicate-list li').count(), 1);
     assert.equal(await popup.locator('#results-search').inputValue(), 'numb');
     await apple.evaluate(() => { window.fixtureDelay = 25; });
-    console.log(`PASS (${apiMode}): per-tab badge, fresh scan baseline after a long-open window, previous results and filters kept during rescan, Scan/Cancel focus handoff`);
+    // A row focused during a rescan is rebuilt away, and a focused results control is
+    // hidden when no repeats remain; focus stays in the results or moves to the summary
+    // instead of dropping to the body. A control that stays on screen keeps focus.
+    await popup.locator('#results-search').fill('');
+    for (const [scenario, target, focused] of [
+      ['duplicates', '#duplicate-list summary', 'results-title'],
+      ['network', '#duplicate-list summary', 'results-title'],
+      ['distinct', '#duplicate-list summary', 'summary-title'],
+      ['empty', '#duplicate-list summary', 'summary-title'],
+      ['duplicates', '#results-search', 'results-search'],
+      ['distinct', '#results-search', 'summary-title'],
+      ['empty', '#results-search', 'summary-title'],
+    ]) {
+      if (await popup.locator('#results').isHidden()) {
+        await apple.evaluate(() => { window.scenario = 'duplicates'; });
+        await scan();
+      }
+      await apple.evaluate(() => { window.fixtureDelay = 600; });
+      await popup.locator('#scan').focus();
+      await popup.keyboard.press('Enter');
+      await popup.waitForFunction(() => document.activeElement?.id === 'cancel');
+      await apple.evaluate(next => { window.scenario = next; window.fixtureDelay = 25; }, scenario);
+      await popup.locator(target).first().focus();
+      await popup.waitForFunction(() => !document.querySelector('#scan').disabled);
+      assert.equal(await popup.evaluate(() => document.activeElement?.id), focused, `${scenario} rescan focus from ${target}`);
+    }
+    await apple.evaluate(() => { window.scenario = 'duplicates'; });
+    console.log(`PASS (${apiMode}): per-tab badge, fresh scan baseline after a long-open window, previous results and filters kept during rescan, Scan/Cancel focus handoff, row and results-control focus kept through a rescan`);
 
     for (const [scenario, title, detail] of [
       ['empty', 'This playlist is empty', /^There are no songs to check\.\nScanned /],
