@@ -2,9 +2,46 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBrowserSource } from '../src/browser-source';
 import { cancelMusicKitRead } from '../src/musickit-bridge';
+import { readPlaylist } from '../src/playlist-reader';
 import type { BridgeRequest } from '../src/types';
 
 const playlist = { id: 'p.test', kind: 'library' as const, storefront: 'us' };
+test('each regionless scan re-resolves MusicKit while its pages remain pinned', async () => {
+  let storefront = 'us';
+  const requests: BridgeRequest[] = [];
+  setup(async injection => {
+    const request = injection.args[0] as BridgeRequest;
+    requests.push(request);
+    return [{ result: { ok: true, data: request.action === 'metadata' ?
+      { name: 'Catalog', total: 0, modified: null, storefront: request.playlist.storefront ?? storefront } :
+      { tracks: [], total: 0, nextOffset: null } } }];
+  });
+  const source = createBrowserSource(1, { id: 'pl.test', kind: 'catalog', storefront: null });
+  assert.equal((await readPlaylist(source)).info.storefront, 'us');
+  storefront = 'gb';
+  assert.equal((await readPlaylist(source)).info.storefront, 'gb');
+  assert.deepEqual(requests.map(request => request.playlist.storefront), [null, 'us', 'us', null, 'gb', 'gb']);
+  assert.deepEqual(requests.map(request => 'expectedPlayerStorefront' in request ? request.expectedPlayerStorefront : undefined),
+    [undefined, 'us', 'us', undefined, 'gb', 'gb']);
+});
+test('catalog metadata requires a validated storefront and pins subsequent reads to it', async () => {
+  const catalog = { id: 'pl.test', kind: 'catalog' as const, storefront: null };
+  for (const storefront of [undefined, null, '', 'USA', 12, ['us'], {}]) {
+    setup(async () => [{ result: { ok: true, data: { name: 'Catalog', total: 0, modified: null, storefront } } }]);
+    await assert.rejects(createBrowserSource(1, catalog).metadata(), { code: 'FORMAT' });
+  }
+  const requests: BridgeRequest[] = [];
+  setup(async request => {
+    requests.push(request.args[0] as BridgeRequest);
+    return [{ result: { ok: true, data: { name: 'Catalog', total: 0, modified: null, storefront: 'gb' } } }];
+  });
+  const source = createBrowserSource(1, catalog);
+  await source.metadata();
+  await source.metadata();
+  assert.equal(requests[0]!.playlist.storefront, null);
+  assert.equal(requests[1]!.playlist.storefront, 'gb');
+  await assert.rejects(createBrowserSource(1, { ...catalog, storefront: 'us' }).metadata(), { code: 'PAGE_CHANGED' });
+});
 interface Injection { func: unknown; world: string; args: unknown[]; }
 function setup(executeScript: (request: Injection) => unknown,
   getTab: ((tabId: number) => unknown) | null = null): void {

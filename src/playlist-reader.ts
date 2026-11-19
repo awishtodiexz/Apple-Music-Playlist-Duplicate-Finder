@@ -2,6 +2,7 @@ import { ScanError } from './errors';
 import type { ErrorCode, PlaylistInfo, Track, TrackPage } from './types';
 
 export interface PlaylistSource {
+  beginScan?(): void;
   metadata(signal?: AbortSignal): Promise<PlaylistInfo>;
   page(offset: number, signal?: AbortSignal): Promise<TrackPage>;
 }
@@ -137,6 +138,7 @@ export async function readPlaylist(
     }
   }
   try {
+    source.beginScan?.();
     const info = options.info ?? await readWithRetry(() => source.metadata(controller.signal));
     total = verifiedTotal(info.total);
     let metadataChars = 0;

@@ -32,6 +32,8 @@ window.MusicKit = { getInstance() {
       if (scenario === 'navigate') history.pushState({}, '', '/us/library/playlist/p.other');
       // Same ID, different regional storefront: the route is no longer the same playlist.
       if (scenario === 'navigateStorefront' && offset === 0) history.pushState({}, '', '/gb/playlist/fixture/pl.fixture');
+      if (scenario === 'switchPlayerStorefront' && offset === 100) window.storefrontId = 'gb';
+      if (scenario === 'missingPlayerStorefront' && offset === 100) window.storefrontId = undefined;
       // The first page's continuation promises more entries; the next request
       // comes back empty, as a playlist shrunken or truncated mid-scan would.
       if (scenario === 'truncated' && offset > 0) return { json: { data: [], meta: {} } };
@@ -82,6 +84,6 @@ window.MusicKit = { getInstance() {
     };
     delete api.get;
   }
-  return { isAuthorized: window.scenario !== 'auth', storefrontId: 'us', api };
+  return { isAuthorized: window.scenario !== 'auth', storefrontId: Object.hasOwn(window, 'storefrontId') ? window.storefrontId : 'us', api };
 } };
 </script>`;
