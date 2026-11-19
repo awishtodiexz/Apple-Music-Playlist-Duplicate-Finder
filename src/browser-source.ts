@@ -16,6 +16,7 @@ function plainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function createBrowserSource(tabId: number, playlist: PlaylistRef): PlaylistSource {
+  let resolvedPlaylist = playlist;
   /**
    * Chrome localizes injection errors, so prefer tab state over matching English
    * text. The message fallback is only used when the tabs API is unavailable.
@@ -84,6 +85,11 @@ export function createBrowserSource(tabId: number, playlist: PlaylistRef): Playl
         if (typeof info.name !== 'string' || info.name.length > 2000 ||
           !(info.modified === null || typeof info.modified === 'string' && info.modified.length <= 2000) ||
           !(info.revision == null || typeof info.revision === 'string' && info.revision.length <= 2000)) throw new ScanError('FORMAT');
+        if (playlist.kind === 'catalog') {
+          if (typeof info.storefront !== 'string' || !/^[a-z]{2}$/.test(info.storefront)) throw new ScanError('FORMAT');
+          if (resolvedPlaylist.storefront !== null && resolvedPlaylist.storefront !== info.storefront) throw new ScanError('PAGE_CHANGED');
+          resolvedPlaylist = { ...playlist, storefront: info.storefront };
+        }
       } else {
         const page = data as unknown as TrackPage;
         if (!Array.isArray(page.tracks) || page.tracks.length > 100 || !count(page.nextOffset) || page.tracks.some(track =>
@@ -112,7 +118,8 @@ export function createBrowserSource(tabId: number, playlist: PlaylistRef): Playl
     }
   }
   return {
-    metadata: async signal => await call({ action: 'metadata', playlist }, signal) as PlaylistInfo,
-    page: async (offset, signal) => await call({ action: 'tracks', playlist, offset }, signal) as TrackPage,
+    beginScan: () => { resolvedPlaylist = playlist; },
+    metadata: async signal => await call({ action: 'metadata', playlist: resolvedPlaylist }, signal) as PlaylistInfo,
+    page: async (offset, signal) => await call({ action: 'tracks', playlist: resolvedPlaylist, offset }, signal) as TrackPage,
   };
 }

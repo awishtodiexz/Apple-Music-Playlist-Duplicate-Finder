@@ -255,6 +255,15 @@ test('catalog routes fall back to the player storefront only when the route omit
   assert.equal((await musicKitBridge({ action: 'tracks', playlist: catalog, offset: 0 })).ok, true);
   assert.equal(calls[0], '/v1/catalog/gb/playlists/pl.abc/tracks?limit=100&offset=0');
 });
+test('regionless catalog metadata exposes the resolved storefront for cache isolation', async () => {
+  const { win } = setup(() => ({ data: [{ id: 'pl.abc', type: 'playlists',
+    attributes: { name: 'Catalog', trackCount: 0 } }] }), { storefrontId: 'GB' });
+  const catalog = { id: 'pl.abc', kind: 'catalog' as const, storefront: null };
+  win.location.pathname = '/playlist/mix/pl.abc';
+  assert.deepEqual(await musicKitBridge({ action: 'metadata', playlist: catalog }), {
+    ok: true, data: { name: 'Catalog', total: 0, modified: null, storefront: 'gb' },
+  });
+});
 test('a hung API request times out without returning partial data', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   setup(() => new Promise(() => {}));

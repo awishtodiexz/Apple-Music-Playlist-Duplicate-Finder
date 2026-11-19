@@ -273,6 +273,43 @@ try {
     assert.equal(await popup.locator('#results').isVisible(), false);
     console.log(`PASS (${apiMode}): catalog playlist endpoint and same-ID regional route change rejection`);
 
+    await open('duplicates', '/playlist/fixture/pl.fixture');
+    await scan();
+    assert.equal(await popup.locator('#status-title').textContent(), 'Scan complete');
+    assert.equal(await popup.evaluate(() => JSON.parse(localStorage.getItem('amdf:last-scan:v1')).storefront), 'us');
+    await popup.goto('about:blank');
+    await popup.goto(popupUrl);
+    await popup.waitForFunction(() => /Scan again to refresh/.test(document.querySelector('#status-detail').textContent));
+    assert.equal(await popup.locator('#status-title').textContent(), 'Showing last scan');
+    assert.equal(plain(await popup.locator('.positions').textContent()), 'Playlist positions: #1 first · #101 · #245');
+    if (process.env.AMDF_EVIDENCE_DIR) {
+      await mkdir(process.env.AMDF_EVIDENCE_DIR, { recursive: true });
+      await popup.screenshot({ path: process.env.AMDF_EVIDENCE_DIR + '/regionless-restored-' + apiMode + '.png', fullPage: true });
+    }
+    await apple.evaluate(() => { window.storefrontId = 'gb'; });
+    await apple.evaluate(() => { window.requests = []; });
+    await scan();
+    assert.equal(await popup.locator('#status-title').textContent(), 'Scan complete');
+    const switchedPaths = await apple.evaluate(() => window.requests);
+    assert.ok(switchedPaths.length >= 3);
+    assert.ok(switchedPaths.every(path => path.startsWith('/v1/catalog/gb/playlists/pl.fixture')));
+    assert.equal(await popup.locator('#scan-comparison').isVisible(), false);
+    assert.equal(await popup.evaluate(() => JSON.parse(localStorage.getItem('amdf:last-scan:v1')).storefront), 'gb');
+    if (process.env.AMDF_EVIDENCE_DIR) {
+      await popup.screenshot({ path: process.env.AMDF_EVIDENCE_DIR + '/region-switch-rescan-' + apiMode + '.png', fullPage: true });
+    }
+    console.log(`PASS (${apiMode}): regionless Scan again re-resolves gb, omits us comparison and caches gb`);
+    await apple.evaluate(() => { window.storefrontId = 'us'; });
+    await popup.goto(popupUrl);
+    await popup.waitForFunction(() => document.querySelector('#status-title').textContent === 'Ready to scan');
+    assert.equal(await popup.locator('#results').isVisible(), false);
+    await apple.evaluate(() => { window.scenario = 'unavailable'; });
+    await popup.goto(popupUrl);
+    await popup.waitForFunction(() => document.querySelector('#status-title').textContent === 'Could not connect');
+    assert.equal(await popup.locator('#results').isVisible(), false);
+    await apple.evaluate(() => { delete window.storefrontId; });
+    console.log(`PASS (${apiMode}): regionless catalog cache restores on reopen; different or unavailable storefront never restores`);
+
     await open('duplicates');
     await scan();
     assert.equal(await popup.evaluate(() => window.__badge), '1');

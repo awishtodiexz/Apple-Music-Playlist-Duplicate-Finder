@@ -33,6 +33,7 @@ export interface Track {
 
 export interface PlaylistInfo {
   name: string;
+  storefront?: string;
   total: number | null;
   modified: string | null;
   revision?: string | null;

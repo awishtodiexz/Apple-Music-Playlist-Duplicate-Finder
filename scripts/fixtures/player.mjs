@@ -82,6 +82,6 @@ window.MusicKit = { getInstance() {
     };
     delete api.get;
   }
-  return { isAuthorized: window.scenario !== 'auth', storefrontId: 'us', api };
+  return { isAuthorized: window.scenario !== 'auth', storefrontId: window.storefrontId ?? 'us', api };
 } };
 </script>`;
