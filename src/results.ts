@@ -63,15 +63,37 @@ export function splitPositions(group: Pick<DuplicateGroup, 'positions'>): { firs
   return { first, later };
 }
 
+function matchCatalogTransitions(groups: readonly DuplicateGroup[], catalogSide: Set<string>, librarySide: Set<string>): void {
+  const pairs = new Map<string, string>();
+  const seen = new Set<string>();
+  for (const group of groups) {
+    if (!group.libraryIds || !catalogSide.has(group.identity)) continue;
+    const candidates = group.libraryIds.map(id => `library:${id}`).filter(id => librarySide.has(id));
+    for (const id of candidates) {
+      if (seen.has(id)) pairs.delete(id);
+      else if (candidates.length === 1) pairs.set(id, group.identity);
+      seen.add(id);
+    }
+  }
+  for (const [libraryId, catalogId] of pairs) {
+    librarySide.delete(libraryId);
+    catalogSide.delete(catalogId);
+  }
+}
+
 export function compareScans(previous: readonly DuplicateGroup[], current: readonly DuplicateGroup[]) {
   const before = new Set(previous.map(group => group.identity));
   const after = new Set(current.map(group => group.identity));
+  const resolved = new Set([...before].filter(id => !after.has(id)));
+  const added = new Set([...after].filter(id => !before.has(id)));
+  matchCatalogTransitions(current, added, resolved);
+  matchCatalogTransitions(previous, resolved, added);
   const extras = (rows: readonly DuplicateGroup[]) => rows.reduce((sum, group) => sum + group.extraCopies, 0);
   return {
     extraDelta: extras(current) - extras(previous),
     remaining: extras(current),
-    resolved: previous.filter(group => !after.has(group.identity)),
-    added: current.filter(group => !before.has(group.identity)),
+    resolved: previous.filter(group => resolved.has(group.identity)),
+    added: current.filter(group => added.has(group.identity)),
   };
 }
 

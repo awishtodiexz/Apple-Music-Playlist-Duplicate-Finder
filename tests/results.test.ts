@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { findDuplicates } from '../src/duplicates';
 import { appleMusicId, compareScans, comparisonText, csvFilename, exportLabels, filterGroups, formatGroupText, formatResultsText, lookalikeIdentities, outcomeTitle, positionParts, scanOutcome, sortGroups, splitPositions, summarize, summaryLine, toCsv, visibleGroups } from '../src/results';
 import type { DuplicateGroup } from '../src/types';
 
@@ -35,6 +36,54 @@ test('comparison describes fewer repeats, no repeats, and increasing duplicates'
   assert.equal(partial.resolved.length, 0);
   assert.match(comparisonText(compareScans(before, [])), /2 fewer extra copies · 0 extra copies now/);
   assert.match(comparisonText(compareScans([], before)), /2 more extra copies/);
+});
+
+test('rescan comparison preserves a repeat when its exact library ID gains or loses a catalog ID', () => {
+  const scan = (catalogId: string | null) => findDuplicates([1, 2].map(position => ({
+    position, name: 'Song', artist: 'Artist', catalogId, libraryId: 'i.same',
+  })));
+  const library = scan(null);
+  const catalog = scan('123');
+  assert.deepEqual([library.unidentified, catalog.unidentified], [0, 0]);
+  assert.deepEqual([library.groups[0]?.identity, catalog.groups[0]?.identity], ['library:i.same', 'catalog:123']);
+  const unchanged = { extraDelta: 0, remaining: 1, resolved: [], added: [] };
+  assert.deepEqual(compareScans(library.groups, catalog.groups), unchanged);
+  assert.deepEqual(compareScans(catalog.groups, library.groups), unchanged);
+});
+
+test('rescan comparison keeps exact identities ahead of transitions and never matches lookalikes', () => {
+  const song = group('Same title', 'Same artist', [1, 2]);
+  const library = { ...song, identity: 'library:i.same' };
+  const catalog = { ...song, identity: 'catalog:123', libraryIds: ['i.same'] };
+  const different = { ...catalog, identity: 'catalog:456' };
+  const unrelated = { ...library, identity: 'library:i.different' };
+  assert.deepEqual(compareScans([catalog], [different]).added, [different]);
+  assert.deepEqual(compareScans([unrelated], [catalog]).resolved, [unrelated]);
+  assert.deepEqual(compareScans([catalog, library], [catalog]).resolved, [library]);
+});
+
+test('ambiguous library-to-catalog transitions leave both sides unmatched', () => {
+  const song = group('Song', 'Artist', [1, 2]);
+  const firstLibrary = { ...song, identity: 'library:i.first' };
+  const secondLibrary = { ...song, identity: 'library:i.second' };
+  const combined = { ...song, identity: 'catalog:123', libraryIds: ['i.first', 'i.second'] };
+  const merged = compareScans([firstLibrary, secondLibrary], [combined]);
+  assert.deepEqual(merged.resolved, [firstLibrary, secondLibrary]);
+  assert.deepEqual(merged.added, [combined]);
+  const split = compareScans([combined], [firstLibrary, secondLibrary]);
+  assert.deepEqual(split.resolved, [combined]);
+  assert.deepEqual(split.added, [firstLibrary, secondLibrary]);
+  const overlapping = [combined, { ...combined, identity: 'catalog:456', libraryIds: ['i.first'] }];
+  assert.deepEqual(compareScans([firstLibrary], overlapping).added, overlapping);
+
+  const catalogTracks = ['123', '123', '456', '456'].map((catalogId, index) => ({
+    position: index + 1, name: 'Song', artist: 'Artist', catalogId, libraryId: 'i.first',
+  }));
+  const { groups: conflicting } = findDuplicates(catalogTracks);
+  assert.deepEqual(conflicting.map(group => group.libraryIds), [undefined, undefined]);
+  const comparison = compareScans([firstLibrary], conflicting);
+  assert.deepEqual(comparison.resolved, [firstLibrary]);
+  assert.deepEqual(comparison.added, conflicting);
 });
 
 test('filter matches song and artist case-insensitively and trims the query', () => {

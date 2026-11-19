@@ -52,6 +52,7 @@ export type BridgeReply = { ok: true; data: PlaylistInfo | TrackPage } |
 
 export interface DuplicateGroup {
   identity: string;
+  libraryIds?: string[];
   name: string;
   artist: string;
   positions: number[];
