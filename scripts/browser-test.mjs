@@ -97,26 +97,35 @@ try {
           window.__createdWindow = options;
           const id = 100 + count;
           window.__createdWindowId = id;
+          const windows = JSON.parse(localStorage.getItem('amdf:test:windows') || '{}');
+          windows[id] = options.url;
+          localStorage.setItem('amdf:test:windows', JSON.stringify(windows));
           return { id };
         },
-        get: async id => {
-          if (id === window.__closedWindowId) throw new Error(`No window with id: ${id}`);
-          return { id };
-        },
+        getAll: async () => Object.keys(JSON.parse(localStorage.getItem('amdf:test:windows') || '{}'))
+          .map(id => ({ id: Number(id) })),
         update: async (id, info) => {
           window.__updatedWindow = { id, info };
           localStorage.setItem('amdf:test:updatedWindow', JSON.stringify({ id, info }));
         },
-        onRemoved: { addListener: listener => (window.__windowRemoved ??= []).push(listener) },
+      },
+      extension: {
+        getViews: ({ windowId }) => {
+          const url = JSON.parse(localStorage.getItem('amdf:test:windows') || '{}')[windowId];
+          return url ? [{ location: { href: url } }] : [];
+        },
       },
       tabs: {
-        query: async () => [{ id: 1, url: await window.readPlayerUrl() }],
+        query: async () => [{
+          id: Number(localStorage.getItem('amdf:test:activeTab')) || 1,
+          url: await window.readPlayerUrl(),
+        }],
         get: async id => ({ id, url: await window.readPlayerUrl() }),
         onUpdated: { addListener: listener => (window.__tabUpdated ??= []).push(listener) },
         onRemoved: { addListener: listener => (window.__tabRemoved ??= []).push(listener) },
       },
       scripting: { executeScript: async ({ target, world, func, args }) => {
-        if (world !== 'MAIN' || target.tabId !== 1 || target.frameIds[0] !== 0) throw new Error('Unexpected injection');
+        if (world !== 'MAIN' || ![1, 2].includes(target.tabId) || target.frameIds[0] !== 0) throw new Error('Unexpected injection');
         return [{ frameId: 0, result: await window.executeInPlayer({ functionSource: func.toString(), request: args[0] }) }];
       } },
     };
@@ -432,7 +441,7 @@ try {
     await popup.locator('#results-sort').selectOption('copies');
     await openSettings();
     await popup.getByRole('button', { name: 'Clear results' }).click();
-    assert.equal(await popup.locator('#status-title').textContent(), 'Results cleared');
+    await popup.getByRole('heading', { name: 'Results cleared', exact: true }).waitFor();
     assert.equal(await popup.locator('#snapshot-note').textContent(), '');
     assert.equal(await popup.locator('#results-note').isVisible(), false);
     assert.equal(await popup.evaluate(() => document.activeElement?.id), 'scan');
@@ -440,6 +449,8 @@ try {
     assert.equal(await popup.locator('#duplicate-list li').count(), 0);
     assert.equal(await popup.evaluate(() => window.__badge), '');
     assert.equal(await popup.locator('#scan').textContent(), 'Scan for duplicates');
+    // Clear is serialized through the same Web Lock reads and saves use.
+    await popup.evaluate(() => navigator.locks.request('amdf:scan-cache', () => {}));
     assert.equal(await popup.evaluate(() => localStorage.getItem('amdf:last-scan:v1')), null);
     console.log(`PASS (${apiMode}): copy (all and per song), CSV with BOM, minimum-copies filter, keyboard search, filter reset, toolbar badge, scan-again label, stale-cache notice, cached last scan, and explicit clear`);
 
@@ -543,13 +554,14 @@ try {
     await popup.getByRole('heading', { name: 'Showing last scan' }).waitFor();
     await openSettings();
     await popup.getByRole('button', { name: 'Clear results' }).click();
-    assert.equal(await popup.locator('#status-title').textContent(), 'Results cleared');
+    await popup.getByRole('heading', { name: 'Results cleared', exact: true }).waitFor();
     assert.equal(await popup.locator('#snapshot-note').textContent(), '');
     assert.equal(await popup.locator('#results-note').isVisible(), false);
     await popup.waitForFunction(() => document.querySelector('#scan').textContent === 'Scan for duplicates');
     assert.equal(await popup.locator('#status-title').textContent(), 'Ready to scan');
     assert.equal(await popup.locator('#duplicate-list li').count(), 0);
     await popup.waitForFunction(() => window.__badge === '');
+    await popup.evaluate(() => navigator.locks.request('amdf:scan-cache', () => {}));
     assert.equal(await popup.evaluate(() => localStorage.getItem('amdf:last-scan:v1')), null);
     await apple.evaluate(() => { window.fixtureDelay = 25; });
 
@@ -700,6 +712,7 @@ try {
         await openSettings();
         await popup.getByRole('button', { name: 'Clear results' }).click();
         await popup.getByRole('heading', { name: 'Results cleared' }).waitFor();
+        await popup.evaluate(() => navigator.locks.request('amdf:scan-cache', () => {}));
         assert.equal(await popup.evaluate(() => localStorage.getItem('amdf:last-scan:v1')), null);
         assert.equal(await popup.locator('#scan-summary').isVisible(), false);
         assert.equal(await popup.locator('#clear-results').isVisible(), false);
@@ -725,6 +738,33 @@ try {
     assert.equal(await popup.locator('#status-title').textContent(), 'Results cleared');
     assert.equal(await popup.locator('#snapshot-note').textContent(), '');
     assert.equal(await popup.locator('#results-note').isVisible(), false);
+
+    // Clear removes only the scan it was shown for: a newer cache entry saved by
+    // another open window between the paint and the click must survive. And it
+    // must not report success before the locked storage operation completes.
+    await open('duplicates');
+    await scan();
+    await popup.evaluate(() => localStorage.setItem('amdf:last-scan:v1', JSON.stringify({
+      version: 1, playlistId: 'p.newer', playlistName: 'Newer playlist', scannedAt: Date.now() + 60_000,
+      groups: [], unidentified: 0, totalTracks: 245, countVerified: true, modificationChecked: true, notes: '',
+    })));
+    // Hold the scan-cache lock so Clear's storage operation queues behind it.
+    await popup.evaluate(async () => {
+      const released = new Promise(resolve => { window.__releaseScanCache = resolve; });
+      await new Promise(resolve => {
+        void navigator.locks.request('amdf:scan-cache', async () => { resolve(); await released; });
+      });
+    });
+    await openSettings();
+    await popup.getByRole('button', { name: 'Clear results' }).click();
+    await popup.waitForTimeout(100);
+    assert.notEqual(await popup.locator('#status-title').textContent(), 'Results cleared',
+      'Clear must not publish success while its storage operation is still queued');
+    await popup.evaluate(() => window.__releaseScanCache());
+    await popup.getByRole('heading', { name: 'Results cleared', exact: true }).waitFor();
+    await popup.evaluate(() => navigator.locks.request('amdf:scan-cache', () => {}));
+    assert.equal(await popup.evaluate(() => JSON.parse(localStorage.getItem('amdf:last-scan:v1'))?.playlistId), 'p.newer',
+      'clearing the shown scan must not remove a newer cached scan');
 
     for (const [scenario, message, code] of [
       ['rate', /limiting requests/, 'RATE_LIMIT'], ['network', /could not be reached/, 'NETWORK'],
@@ -1036,8 +1076,8 @@ try {
 
     // Search responsiveness: a burst of keystrokes must not rebuild the whole
     // list once per character. Count replaceChildren calls on #duplicate-list
-    // while typing eight characters; the debounce yields at most two renders
-    // (one leading, one trailing), not eight.
+    // while typing eight characters; the debounce renders once immediately and
+    // once after typing stops, not eight times.
     await popup.evaluate(() => {
       const resultList = document.querySelector('#duplicate-list');
       window.__listRebuilds = 0;
@@ -1048,15 +1088,19 @@ try {
       };
     });
     await popup.locator('#results-search').focus();
-    await popup.keyboard.type('abcdefgh', { delay: 15 });
-    await popup.waitForTimeout(250);
+    await popup.evaluate(() => {
+      const input = document.querySelector('#results-search');
+      for (const character of 'abcdefgh') {
+        input.value += character;
+        input.dispatchEvent(new InputEvent('input', { bubbles: true, data: character, inputType: 'insertText' }));
+      }
+    });
+    await popup.waitForFunction(() => window.__listRebuilds >= 2);
     const listRebuilds = await popup.evaluate(() => {
       Element.prototype.replaceChildren = window.__originalReplaceChildren;
       return window.__listRebuilds;
     });
-    assert.ok(listRebuilds >= 1, 'search must rebuild the list at least once');
-    assert.ok(listRebuilds <= 2,
-      `eight search characters rebuilt the list ${listRebuilds} times; expected at most 2 (leading + trailing)`);
+    assert.equal(listRebuilds, 2, 'one typing burst must render on the first and last keystrokes only');
     console.log(`Search debounce (${apiMode}): eight characters rebuilt the list ${listRebuilds} time(s)`);
     await popup.locator('#results-search').fill('');
 
@@ -1356,7 +1400,8 @@ try {
   await popup.emulateMedia({ forcedColors: 'none' });
   console.log('PASS: long/mixed-script names wrap without overflow or unsafe markup, RTL names keep direction, empty artists are skipped, and text/placeholder/controls/focus contrast passes in both themes with a forced-colors boundary');
 
-  // Pop-out window: a fresh page targets the originating tab and hides the button.
+  // Pop-out windows are matched to their source tab through the extension views
+  // they host: the same tab focuses its own window, another tab gets a new one.
   await apple.evaluate(() => {
     window.scenario = 'duplicates';
     history.replaceState({}, '', '/us/library/playlist/p.fixture');
@@ -1371,34 +1416,62 @@ try {
   assert.match(created.url, /popup\.html\?tab=1$/);
   assert.equal(created.width, 400);
   const createdId = await popup.evaluate(() => window.__createdWindowId);
-  assert.equal(await popup.evaluate(() => localStorage.getItem('amdf:popout-window:v1')), String(createdId),
-    'the window id is persisted for the next popup session');
-  // A second pop-out click focuses the window that is already open, without creating another.
+  // A second pop-out click focuses the window already open for this tab.
+  await popup.evaluate(() => localStorage.removeItem('amdf:test:updatedWindow'));
   await popup.locator('#pop-out').click();
-  await popup.waitForFunction(() => window.__updatedWindow);
+  await popup.waitForFunction(() => localStorage.getItem('amdf:test:updatedWindow'));
   assert.equal(await popup.evaluate(() => window.__createCount), 1, 'two clicks must create only one window');
-  const focused = await popup.evaluate(() => window.__updatedWindow);
-  assert.equal(focused.id, createdId);
-  assert.deepEqual(focused.info, { focused: true });
-  // Reopening the toolbar popup is a new JS context. The persisted id must still find the window.
+  assert.deepEqual(await popup.evaluate(() => JSON.parse(localStorage.getItem('amdf:test:updatedWindow'))),
+    { id: createdId, info: { focused: true } });
+  // Reopening the toolbar popup is a new JS context; live windows are still found.
   await popup.goto(popupUrl);
   await popup.waitForFunction(() => !document.querySelector('#pop-out').hidden);
+  await popup.evaluate(() => localStorage.removeItem('amdf:test:updatedWindow'));
   await popup.locator('#pop-out').click();
   await popup.waitForFunction(() => localStorage.getItem('amdf:test:updatedWindow'));
   assert.equal(await popup.evaluate(() => localStorage.getItem('amdf:test:createCount')), '1',
     'a new popup session must not create another window');
-  const reloadedFocus = await popup.evaluate(() => JSON.parse(localStorage.getItem('amdf:test:updatedWindow')));
-  assert.equal(reloadedFocus.id, createdId);
-  assert.deepEqual(reloadedFocus.info, { focused: true });
-  // Removing that window clears the saved id, so the next click opens a fresh one.
-  await popup.evaluate(id => window.__windowRemoved.forEach(listener => listener(id)), createdId);
+  assert.deepEqual(await popup.evaluate(() => JSON.parse(localStorage.getItem('amdf:test:updatedWindow'))),
+    { id: createdId, info: { focused: true } });
+  // Clicking from another tab opens that tab's own window instead of focusing this one.
+  await popup.evaluate(() => localStorage.setItem('amdf:test:activeTab', '2'));
+  await popup.goto(popupUrl);
+  await popup.waitForFunction(() => !document.querySelector('#pop-out').hidden);
   await popup.locator('#pop-out').click();
-  assert.equal(await popup.evaluate(() => window.__createCount), 2, 'a closed window is replaced by a new one');
-  // A get that throws (window already gone) clears the id and opens a fresh one too.
-  await popup.evaluate(() => { chrome.windows.get = async () => { throw new Error('No window'); }; });
+  await popup.waitForFunction(() => window.__createCount === 2);
+  assert.match(await popup.evaluate(() => window.__createdWindow.url), /popup\.html\?tab=2$/,
+    'a different source tab gets its own window');
+  // Back on the first tab, its original window is focused again without a new one.
+  await popup.evaluate(() => localStorage.setItem('amdf:test:activeTab', '1'));
+  await popup.goto(popupUrl);
+  await popup.waitForFunction(() => !document.querySelector('#pop-out').hidden);
+  await popup.evaluate(() => localStorage.removeItem('amdf:test:updatedWindow'));
   await popup.locator('#pop-out').click();
-  assert.equal(await popup.evaluate(() => window.__createCount), 3, 'a vanished window is replaced by a new one');
-  await popup.evaluate(() => { chrome.windows.get = async id => ({ id }); });
+  await popup.waitForFunction(() => localStorage.getItem('amdf:test:updatedWindow'));
+  assert.equal(await popup.evaluate(() => localStorage.getItem('amdf:test:createCount')), '2',
+    'returning to the first tab must not create a window');
+  assert.deepEqual(await popup.evaluate(() => JSON.parse(localStorage.getItem('amdf:test:updatedWindow'))),
+    { id: createdId, info: { focused: true } });
+  // A window that closes between enumeration and focus is replaced by a fresh one.
+  await popup.evaluate(id => {
+    chrome.windows.update = async target => {
+      if (target === id) throw new Error(`No window with id: ${id}`);
+      window.__updatedWindow = { id: target, info: { focused: true } };
+    };
+  }, createdId);
+  await popup.locator('#pop-out').click();
+  await popup.waitForFunction(() => window.__createCount === 3);
+  const replacedId = await popup.evaluate(() => window.__createdWindowId);
+  // A closed window is no longer enumerated, so the next click opens a fresh one too.
+  await popup.evaluate(ids => {
+    const windows = JSON.parse(localStorage.getItem('amdf:test:windows') || '{}');
+    for (const id of ids) delete windows[id];
+    localStorage.setItem('amdf:test:windows', JSON.stringify(windows));
+  }, [createdId, replacedId]);
+  await popup.locator('#pop-out').click();
+  await popup.waitForFunction(() => window.__createCount === 4);
+  assert.match(await popup.evaluate(() => window.__createdWindow.url), /popup\.html\?tab=1$/,
+    'a closed window is replaced by a new one for the same tab');
   await popup.goto(created.url);
   await popup.waitForFunction(() => document.querySelector('#playlist-name').textContent.includes('My playlist'));
   assert.equal(await popup.locator('#pop-out').isVisible(), false);
@@ -1649,6 +1722,7 @@ try {
   assert.equal(await popup.locator('#clear-results').isVisible(), true);
   await openSettings();
   await popup.locator('#clear-results').click();
+  await popup.getByRole('heading', { name: 'Results cleared', exact: true }).waitFor();
   assert.equal(await popup.locator('#scan-comparison').isVisible(), false);
   await scanScenario('fiftyOne');
   for (const width of [380, 300, 240]) {

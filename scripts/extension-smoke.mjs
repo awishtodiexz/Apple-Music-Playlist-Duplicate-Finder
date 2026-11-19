@@ -282,6 +282,12 @@ try {
     }
   }, 'pop-out window connection');
   assert.equal(await popped.evaluate(() => document.querySelector('#pop-out').hidden), true);
+  assert.equal(await popped.evaluate(async () => {
+    const { id: windowId } = await chrome.windows.getCurrent();
+    const windows = await chrome.windows.getAll({ windowTypes: ['popup'] });
+    return windows.some(window => window.id === windowId) &&
+      chrome.extension.getViews({ windowId }).some(view => view.location.href === location.href);
+  }), true, 'Chromium must discover the installed popup view for its browser window');
   // The pop-out stays open when its tab moves on. With only activeTab and scripting, tabs.onUpdated
   // still reports the move (including Apple Music's same-document navigation), so it must not keep
   // offering "Scan again" for a page that is no longer a playlist.

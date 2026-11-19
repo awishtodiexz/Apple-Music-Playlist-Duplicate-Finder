@@ -4,7 +4,7 @@ import { connectFailure, errorCode, errorMessage, errorRecovery, recoveryLabel, 
 import { readPlaylist, scanLimits, type PlaylistSource, type ScanProgress } from './playlist-reader';
 import { detectPlaylist } from './playlist-url';
 import { appleMusicId, compareScans, comparisonText, csvFilename, exportLabels, formatGroupText, formatResultsText, lookalikeIdentities, outcomeTitle, positionParts, scanOutcome, splitPositions, summarize, summaryLine, toCsv, visibleGroups, type ResultSummary, type SortMode } from './results';
-import { cacheFreshness, clearCachedScan, loadCachedScan, loadPopoutWindowId, loadScanWindowPreference, loadThemePreference, saveCachedScan, savePopoutWindowId, saveScanWindowPreference, saveThemePreference, type CachedScan, type CacheFreshness } from './storage';
+import { cacheFreshness, clearCachedScan, loadCachedScan, loadScanWindowPreference, loadThemePreference, saveCachedScan, saveScanWindowPreference, saveThemePreference, type CachedScan, type CacheFreshness, type ScanCacheRef } from './storage';
 import { nextTheme, themeLabel, type ThemePreference } from './theme';
 import type { DuplicateGroup, PlaylistInfo, PlaylistRef } from './types';
 
@@ -72,6 +72,7 @@ const copiedMs = 2_000;
 interface CompletedScan {
   playlistName: string;
   scannedAt: number;
+  cacheRef: ScanCacheRef;
   groups: DuplicateGroup[];
   totalTracks: number;
   unidentified: number;
@@ -92,6 +93,7 @@ let currentPlaylist: PlaylistRef | null = null;
 let connectedTabId: number | null = null;
 let currentPlaylistName = '';
 let busy = false;
+let clearingResults = false;
 // How the last failure can be recovered from, straight from the error policy table.
 let failure: Recovery | null = null;
 // The playlist the popup currently describes; a pop-out compares it with its tab when it regains focus.
@@ -161,8 +163,8 @@ function updateScanLabel(): void {
 }
 
 /** The popped-out window carries the tab it was opened from; the toolbar popup does not. */
-function pinnedTabId(): number | null {
-  const value = new URLSearchParams(location.search).get('tab');
+function pinnedTabId(search = location.search): number | null {
+  const value = new URLSearchParams(search).get('tab');
   if (!value || !/^\d{1,16}$/.test(value)) return null;
   const id = Number(value);
   return Number.isSafeInteger(id) && id > 0 ? id : null;
@@ -174,43 +176,35 @@ scanWindowOption.hidden = pinnedTabId() !== null;
 scanWindow.checked = loadScanWindowPreference();
 scanWindow.addEventListener('change', () => saveScanWindowPreference(scanWindow.checked));
 
-// The scan window this popup opened. Kept so another pop-out click focuses it
-// instead of opening a second copy of the same results.
-// The scan window this extension opened last. It is persisted because opening
-// the window closes the toolbar popup, so an in-memory id would be forgotten.
-let popoutWindowId: number | null = loadPopoutWindowId();
-chrome.windows?.onRemoved?.addListener?.(windowId => {
-  if (windowId === popoutWindowId) {
-    popoutWindowId = null;
-    savePopoutWindowId(null);
-  }
-});
-
 async function openWindow(autoScan: boolean): Promise<void> {
   if (connectedTabId === null) return;
   const url = new URL(chrome.runtime.getURL('popup.html'));
   url.searchParams.set('tab', String(connectedTabId));
   if (autoScan && currentPlaylist) url.searchParams.set('scan', currentPlaylist.id);
-  const created = await chrome.windows.create({ url: url.href, type: 'popup', width: 400, height: 760 });
-  if (created && created.id !== undefined) {
-    popoutWindowId = created.id;
-    savePopoutWindowId(popoutWindowId);
-  }
+  await chrome.windows.create({ url: url.href, type: 'popup', width: 400, height: 760 });
 }
 
-/** Focus the window already opened from here, or open one when it is gone. */
+/**
+ * Focus the pop-out already open for this tab, or open one. Windows are matched
+ * by asking which extension views they host: each pop-out is pinned to its
+ * source tab, so only a window showing this tab's popup counts.
+ */
 async function focusOrOpenWindow(): Promise<void> {
-  if (popoutWindowId === null) popoutWindowId = loadPopoutWindowId();
-  if (popoutWindowId !== null) {
+  const tabId = connectedTabId;
+  if (tabId === null) return;
+  const popupUrl = new URL(chrome.runtime.getURL('popup.html'));
+  for (const { id } of await chrome.windows.getAll({ windowTypes: ['popup'] })) {
+    if (id === undefined) continue;
+    const matches = chrome.extension.getViews({ windowId: id }).some(view => {
+      const url = new URL(view.location.href);
+      return url.protocol === popupUrl.protocol && url.host === popupUrl.host && url.pathname === popupUrl.pathname &&
+        pinnedTabId(url.search) === tabId;
+    });
+    if (!matches) continue;
     try {
-      await chrome.windows.get(popoutWindowId);
-      await chrome.windows.update(popoutWindowId, { focused: true });
+      await chrome.windows.update(id, { focused: true });
       return;
-    } catch {
-      // The window was closed without onRemoved reaching this popup.
-      popoutWindowId = null;
-      savePopoutWindowId(null);
-    }
+    } catch { /* The matching window may have closed after enumeration. */ }
   }
   await openWindow(false);
 }
@@ -226,10 +220,13 @@ function updatePopOut(): void {
 
 popOut.addEventListener('click', async () => {
   if (connectedTabId === null || busy) return;
+  popOut.disabled = true;
   try {
     await focusOrOpenWindow();
   } catch {
     setStatus('Could not open a window', 'Try Open in a window again.');
+  } finally {
+    popOut.disabled = false;
   }
 });
 
@@ -648,10 +645,17 @@ function scanNotesText(summary: ResultSummary, countVerified: boolean, modificat
   return lines.join('\n');
 }
 
+/** Serialize reads and writes across extension windows. */
+async function withScanCache<T>(operation: () => T, unavailable: T): Promise<T> {
+  try { return await navigator.locks.request('amdf:scan-cache', operation); }
+  catch { return unavailable; }
+}
+
 function restoreCached(cached: CachedScan): CompletedScan {
   const completed: CompletedScan = {
     playlistName: cached.playlistName,
     scannedAt: cached.scannedAt,
+    cacheRef: { playlistId: cached.playlistId, storefront: cached.storefront, scannedAt: cached.scannedAt, scanId: cached.scanId },
     groups: cached.groups,
     totalTracks: cached.totalTracks,
     unidentified: cached.unidentified,
@@ -697,14 +701,12 @@ const neutralConnectTitles: Readonly<Record<string, string | undefined>> = {
   TAB_CLOSED: 'Apple Music tab closed',
 };
 
-function cacheCurrent(playlist: PlaylistRef, info: PlaylistInfo, countVerified: boolean,
-  modificationChecked: boolean, scannedAt: number): boolean {
+async function cacheCurrent(cacheRef: ScanCacheRef, info: PlaylistInfo, countVerified: boolean,
+  modificationChecked: boolean): Promise<boolean> {
   const cached: CachedScan = {
     version: 1,
-    playlistId: playlist.id,
-    storefront: playlist.kind === 'catalog' ? playlist.storefront : null,
+    ...cacheRef,
     playlistName: info.name,
-    scannedAt,
     groups,
     unidentified,
     totalTracks,
@@ -714,7 +716,7 @@ function cacheCurrent(playlist: PlaylistRef, info: PlaylistInfo, countVerified: 
     modified: info.modified,
     revision: info.revision ?? null,
   };
-  const saved = saveCachedScan(cached);
+  const saved = await withScanCache(() => saveCachedScan(cached), false);
   if (!saved) resultsFeedback.textContent = tooLargeToKeep;
   clearResults.hidden = groups.length === 0 && !saved && !lastCompleted?.comparison;
   return saved;
@@ -851,7 +853,7 @@ async function initialize(): Promise<void> {
     const candidate = createBrowserSource(tab.id, playlist);
     // A cached scan does not need the player, so paint it before the round trip:
     // a slow, signed-out or unreachable MusicKit must not hide existing results.
-    const cached = loadCachedScan(playlist.id, playlist.storefront);
+    const cached = await withScanCache(() => loadCachedScan(playlist.id, playlist.storefront), null);
     if (cached) {
       const restored = restoreCached(cached);
       showPlaylistName(cached.playlistName, cached.playlistName);
@@ -1006,8 +1008,15 @@ downloadResults.addEventListener('click', () => {
   resultsFeedback.textContent = exportLabels(visible.length, visible.length < groups.length).downloaded;
 });
 
-clearResults.addEventListener('click', () => {
-  clearCachedScan();
+clearResults.addEventListener('click', async () => {
+  const completed = lastCompleted;
+  if (!completed || clearingResults) return;
+  clearingResults = true;
+  clearResults.disabled = true;
+  await withScanCache(() => clearCachedScan(completed.cacheRef), undefined);
+  clearingResults = false;
+  clearResults.disabled = scanController !== null;
+  if (lastCompleted !== completed) return;
   lastCompleted = null;
   clearGroups();
   setBadge(null);
@@ -1037,7 +1046,7 @@ function progressStatus(event: ScanProgress, keepNote: string): { title: string;
 }
 
 async function startScan(): Promise<void> {
-  if (busy) return;
+  if (busy || clearingResults) return;
   if (!source || !currentPlaylist) { await initialize(); return; }
   if (pinnedTabId() === null && scanWindow.checked) {
     busy = true;
@@ -1105,6 +1114,9 @@ async function startScan(): Promise<void> {
     // Without results on screen, the caveats have nowhere else to go.
     const notesInStatus = duplicates.groups.length === 0 && scanNotes ? `\n${scanNotes}` : '';
     const scannedAt = Date.now();
+    const cacheRef: ScanCacheRef = { playlistId: currentPlaylist.id,
+      storefront: currentPlaylist.kind === 'catalog' ? currentPlaylist.storefront : null,
+      scannedAt, scanId: crypto.randomUUID() };
     const previous = lastCompleted;
     const comparison: CompletedScan['comparison'] = previous === null ? null :
       previous.unidentified > 0 || unidentified > 0 ? { kind: 'unavailable', previousAt: previous.scannedAt } :
@@ -1116,6 +1128,7 @@ async function startScan(): Promise<void> {
     applyCompleted({
       playlistName: result.info.name,
       scannedAt,
+      cacheRef,
       groups: duplicates.groups,
       totalTracks,
       unidentified,
@@ -1123,7 +1136,7 @@ async function startScan(): Promise<void> {
       cached: false,
       comparison,
     });
-    const saved = cacheCurrent(currentPlaylist, result.info, result.countVerified, result.modificationChecked, scannedAt);
+    const saved = await cacheCurrent(cacheRef, result.info, result.countVerified, result.modificationChecked);
     if (lastCompleted) lastCompleted.cached = saved;
   } catch (error) {
     // A failed or cancelled scan never replaces the last completed result. When

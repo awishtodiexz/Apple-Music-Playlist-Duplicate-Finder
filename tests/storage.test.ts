@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { cacheFreshness, clearCachedScan, loadCachedScan, loadPopoutWindowId, loadScanWindowPreference, loadThemePreference, saveCachedScan, savePopoutWindowId, saveScanWindowPreference, saveThemePreference, type CachedScan } from '../src/storage';
+import { cacheFreshness, clearCachedScan, loadCachedScan, loadScanWindowPreference, loadThemePreference, saveCachedScan, saveScanWindowPreference, saveThemePreference, type CachedScan } from '../src/storage';
 import type { DuplicateGroup } from '../src/types';
 
 const values = new Map<string, string>();
@@ -35,7 +35,7 @@ test('scan windows default on, remember the choice, and tolerate corrupt prefere
 });
 
 test('a cached scan round-trips only for the same playlist', () => {
-  clearCachedScan();
+  values.clear();
   assert.equal(saveCachedScan(scan), true);
   assert.deepEqual(loadCachedScan('p.fixture'), scan);
   assert.equal(loadCachedScan('p.other'), null);
@@ -95,6 +95,7 @@ test('schema-inconsistent cached scans are rejected', () => {
       groups: [group, { identity: 'catalog:2', name: 'Other', artist: 'Artist', positions: [1, 2, 3], copies: 3, extraCopies: 2 }],
     }],
     ['invalid scan timestamp', { ...scan, scannedAt: 0 }],
+    ['storefront is not a string', { ...scan, storefront: ['us'] }],
     ['oversized song text', { ...scan, groups: [{ ...group, name: 'x'.repeat(2001) }] }],
     ['aliases on a library-only group', { ...scan, groups: [{ ...group, identity: 'library:i.one', libraryIds: ['i.one'] }] }],
     ['aliases are not an array', { ...scan, groups: [{ ...group, libraryIds: 'i.one' }] }],
@@ -125,7 +126,7 @@ test('a cached group with inconsistent copy counts is rejected', () => {
 });
 
 test('oversized results are refused and do not leave stale data behind', () => {
-  clearCachedScan();
+  values.clear();
   assert.equal(saveCachedScan({ ...scan, groups: [{ ...group, name: 'x'.repeat(5_000_000) }] }), false);
   assert.equal(loadCachedScan('p.fixture'), null);
 });
@@ -207,7 +208,7 @@ test('if both cache writes fail, the superseded scan is removed and nothing is s
 });
 
 test('a completed scan replaces the previous cached scan', () => {
-  clearCachedScan();
+  values.clear();
   assert.equal(saveCachedScan(scan), true);
   const newer: CachedScan = { ...scan, scannedAt: scan.scannedAt + 60_000, groups: [], unidentified: 0, totalTracks: 245 };
   assert.equal(saveCachedScan(newer), true);
@@ -217,8 +218,44 @@ test('a completed scan replaces the previous cached scan', () => {
 
 test('clearing removes the cached scan', () => {
   assert.equal(saveCachedScan(scan), true);
-  clearCachedScan();
+  clearCachedScan(scan);
   assert.equal(loadCachedScan('p.fixture'), null);
+});
+
+test('clearing removes only the exact scan it was shown for', () => {
+  values.clear();
+  const original: CachedScan = { ...scan, scanId: 'aaaaaaaa-1111-2222-3333-444444444444' };
+  assert.equal(saveCachedScan(original), true);
+  // A stale clear must not remove the newer scan another window saved meanwhile.
+  const newer: CachedScan = {
+    ...original, scannedAt: original.scannedAt + 60_000, scanId: 'bbbbbbbb-1111-2222-3333-444444444444',
+  };
+  assert.equal(saveCachedScan(newer), true);
+  clearCachedScan(original);
+  assert.deepEqual(loadCachedScan('p.fixture'), newer);
+  // A clear naming another playlist leaves this scan alone.
+  clearCachedScan({ playlistId: 'p.other', storefront: null, scannedAt: newer.scannedAt, scanId: newer.scanId });
+  assert.deepEqual(loadCachedScan('p.fixture'), newer);
+  // The same playlist and timestamp with a different scan ID is a different scan.
+  clearCachedScan({ playlistId: 'p.fixture', storefront: null, scannedAt: newer.scannedAt,
+    scanId: 'cccccccc-1111-2222-3333-444444444444' });
+  assert.deepEqual(loadCachedScan('p.fixture'), newer);
+  clearCachedScan(newer);
+  assert.equal(loadCachedScan('p.fixture'), null);
+});
+
+test('clearing with unavailable storage is a safe no-op', () => {
+  const real = globalThis.localStorage;
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    get: () => { throw new Error('storage blocked'); },
+  });
+  try {
+    clearCachedScan(scan);
+    assert.equal(loadCachedScan('p.fixture'), null);
+  } finally {
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: real });
+  }
 });
 
 test('cache freshness compares modification and revision markers', () => {
@@ -261,23 +298,8 @@ test('cache freshness treats a changed known total as a playlist change', () => 
   assert.equal(cacheFreshness({ ...scan, totalTracks: 245, modified: 'm' }, { ...info, modified: 'm' }), 'current');
 });
 
-test('the pop-out window id survives a reload and rejects bad values', () => {
-  values.delete('amdf:popout-window:v1');
-  assert.equal(loadPopoutWindowId(), null);
-  savePopoutWindowId(123);
-  assert.equal(loadPopoutWindowId(), 123);
-  values.set('amdf:popout-window:v1', 'not-a-number');
-  assert.equal(loadPopoutWindowId(), null);
-  values.set('amdf:popout-window:v1', '0');
-  assert.equal(loadPopoutWindowId(), null);
-  savePopoutWindowId(456);
-  assert.equal(loadPopoutWindowId(), 456);
-  savePopoutWindowId(null);
-  assert.equal(loadPopoutWindowId(), null);
-});
-
 test('metadata markers survive a cache round-trip', () => {
-  clearCachedScan();
+  values.clear();
   assert.equal(saveCachedScan({ ...scan, modified: 'm', revision: 'r' }), true);
   const loaded = loadCachedScan('p.fixture');
   assert.equal(loaded?.modified, 'm');

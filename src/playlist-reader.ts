@@ -152,13 +152,9 @@ export async function readPlaylist(
     // arrives empty without one, the playlist changed (or the reply was
     // truncated) mid-scan; that is not evidence of exhaustion.
     let continuationExpected = false;
-    const recentPageMs: number[] = [];
     for (let pageNumber = 0; pageNumber < maxPages; pageNumber++) {
       const offset = tracks.length;
-      const pageStartedAt = Date.now();
       const page = await readWithRetry(() => source.page(offset, controller.signal));
-      recentPageMs.push(Date.now() - pageStartedAt);
-      if (recentPageMs.length > 10) recentPageMs.shift();
       const pageTotal = verifiedTotal(page.total);
       if (page.nextOffset !== null && (!Number.isSafeInteger(page.nextOffset) || page.nextOffset < 0)) {
         throw new ScanError('FORMAT');
@@ -177,18 +173,6 @@ export async function readPlaylist(
       if (metadataChars > maxMetadataChars) throw new ScanError('LIMIT');
       tracks.push(...page.tracks);
       if (total !== null && tracks.length > total) throw new ScanError('INCOMPLETE');
-      // If even the fastest recent page cannot finish the remaining work, stop
-      // now instead of holding the popup for the rest of the deadline. The fastest
-      // page (not the average) keeps a one-off retry sleep from aborting a scan
-      // that is still on track, and the 1.25 margin tolerates timing noise.
-      if (total !== null && pageNumber >= 4 && recentPageMs.length) {
-        const remainingPages = Math.ceil((total - tracks.length) / 100);
-        const elapsed = now() - started;
-        const fastestPageMs = Math.min(...recentPageMs);
-        if (remainingPages >= 10 && fastestPageMs * remainingPages > (deadlineMs - elapsed) * 1.25) {
-          throw new ScanError('DEADLINE');
-        }
-      }
       progress('reading');
       if (page.nextOffset !== null) {
         if (!page.tracks.length || page.nextOffset !== tracks.length || total === tracks.length) throw new ScanError('INCOMPLETE');
