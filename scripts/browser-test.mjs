@@ -337,6 +337,41 @@ try {
     await apple.evaluate(() => { delete window.storefrontId; });
     console.log(`PASS (${apiMode}): regionless catalog cache restores on reopen; different or unavailable storefront never restores`);
 
+    await open('duplicates', '/gb/playlist/fixture/pl.fixture');
+    await scan();
+    const cacheBeforeMidscanSwitch = await popup.evaluate(() => localStorage.getItem('amdf:last-scan:v1'));
+    await apple.evaluate(() => {
+      window.scenario = 'switchPlayerStorefront';
+      window.requests = [];
+      window.storefrontId = 'us';
+      history.replaceState({}, '', '/playlist/fixture/pl.fixture');
+    });
+    await popup.goto(popupUrl);
+    await popup.waitForFunction(() => document.querySelector('#status-title').textContent === 'Ready to scan');
+    await scan();
+    assert.equal(await popup.locator('#status-title').textContent(), 'Scan failed');
+    assert.equal(await popup.locator('#status-code').textContent(), 'Error code: PAGE_CHANGED');
+    assert.equal(await popup.locator('#results').isVisible(), false);
+    assert.equal(await popup.evaluate(() => localStorage.getItem('amdf:last-scan:v1')), cacheBeforeMidscanSwitch);
+    assert.ok((await apple.evaluate(() => window.requests)).some(path => path.includes('offset=100')));
+    if (process.env.AMDF_EVIDENCE_DIR) {
+      await popup.screenshot({ path: process.env.AMDF_EVIDENCE_DIR + '/midscan-region-switch-' + apiMode + '.png', fullPage: true });
+    }
+    await apple.evaluate(() => { delete window.storefrontId; });
+    console.log(`PASS (${apiMode}): mid-scan regionless storefront switch fails PAGE_CHANGED without partial results or cache overwrite`);
+
+    await open('missingPlayerStorefront', '/playlist/fixture/pl.fixture');
+    await scan();
+    assert.equal(await popup.locator('#status-title').textContent(), 'Scan complete');
+    assert.equal(await popup.locator('#results').isVisible(), true);
+    assert.equal(await apple.evaluate(() => Object.hasOwn(window, 'storefrontId') && window.storefrontId === undefined), true);
+    const transientPaths = await apple.evaluate(() => window.requests);
+    assert.ok(transientPaths.some(path => path.includes('offset=200')));
+    assert.ok(transientPaths.every(path => path.startsWith('/v1/catalog/us/playlists/pl.fixture')));
+    assert.equal(await popup.evaluate(() => JSON.parse(localStorage.getItem('amdf:last-scan:v1')).storefront), 'us');
+    await apple.evaluate(() => { delete window.storefrontId; });
+    console.log(`PASS (${apiMode}): undefined storefront mid-scan keeps reading and caching the pinned us region`);
+
     await open('duplicates');
     await scan();
     assert.equal(await popup.evaluate(() => window.__badge), '1');

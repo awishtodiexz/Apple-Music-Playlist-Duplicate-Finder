@@ -205,6 +205,17 @@ export async function musicKitBridge(request: BridgeRequest): Promise<BridgeRepl
       !/^(?:p|pl)\.[A-Za-z0-9-]{1,126}$/.test(playlist.id) ||
       (playlist.kind !== 'library' && playlist.kind !== 'catalog')) fail('NOT_PLAYLIST');
     if (request.action !== 'metadata' && request.action !== 'tracks') fail('FORMAT');
+    const expectedPlayerStorefront = request.expectedPlayerStorefront;
+    if (expectedPlayerStorefront !== undefined &&
+      (typeof expectedPlayerStorefront !== 'string' || !/^[a-z]{2}$/.test(expectedPlayerStorefront) ||
+        playlist.kind !== 'catalog' || playlist.storefront !== expectedPlayerStorefront)) fail('FORMAT');
+    const checkPlayerStorefront = (): void => {
+      if (expectedPlayerStorefront === undefined) return;
+      let current: unknown;
+      try { current = surface()?.instance.storefrontId; } catch { /* untrusted player */ }
+      if (typeof current === 'string' && /^[a-z]{2}$/i.test(current) &&
+        current.toLowerCase() !== expectedPlayerStorefront) fail('PAGE_CHANGED');
+    };
     checkPage(playlist.storefront);
     let ready = surface();
     // Only wait when MusicKit has started loading. A page with no MusicKit at
@@ -219,6 +230,7 @@ export async function musicKitBridge(request: BridgeRequest): Promise<BridgeRepl
     if (!ready) return { ok: false, code: 'MUSICKIT_UNAVAILABLE' };
     const { instance, api, read, useMusic } = ready;
     if (instance.isAuthorized === false) return { ok: false, code: 'AUTH' };
+    checkPlayerStorefront();
 
     // The visible route is authoritative. Only fall back to the player's
     // storefront when the route does not carry one.
@@ -261,6 +273,7 @@ export async function musicKitBridge(request: BridgeRequest): Promise<BridgeRepl
     const assertActive = (): void => {
       if (guardFailure) fail(guardFailure);
       checkPage(storefront);
+      checkPlayerStorefront();
     };
     try {
       response = await Promise.race([

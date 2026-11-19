@@ -45,7 +45,7 @@ export interface TrackPage {
   nextOffset: number | null;
 }
 
-export type BridgeRequest = { playlist: PlaylistRef; requestId?: string } & (
+export type BridgeRequest = { playlist: PlaylistRef; requestId?: string; expectedPlayerStorefront?: string } & (
   { action: 'metadata' } | { action: 'tracks'; offset: number }
 );
 export type BridgeReply = { ok: true; data: PlaylistInfo | TrackPage } |

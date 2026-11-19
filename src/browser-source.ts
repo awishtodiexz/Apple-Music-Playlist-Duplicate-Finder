@@ -53,7 +53,9 @@ export function createBrowserSource(tabId: number, playlist: PlaylistRef): Playl
         target: { tabId, frameIds: [0] },
         world: 'MAIN',
         func: musicKitBridge,
-        args: [{ ...request, requestId }],
+        args: [{ ...request, requestId,
+          ...(playlist.kind === 'catalog' && playlist.storefront === null && request.playlist.storefront !== null ?
+            { expectedPlayerStorefront: request.playlist.storefront } : {}) }],
       });
       const frames = await Promise.race([
         pending,

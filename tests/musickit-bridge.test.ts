@@ -264,6 +264,67 @@ test('regionless catalog metadata exposes the resolved storefront for cache isol
     ok: true, data: { name: 'Catalog', total: 0, modified: null, storefront: 'gb' },
   });
 });
+test('regionless pinned reads reject player storefront changes before or during a page read', async () => {
+  const catalog = { id: 'pl.abc', kind: 'catalog' as const, storefront: 'us' };
+  const guarded = { action: 'tracks' as const, playlist: catalog, offset: 100, expectedPlayerStorefront: 'us' };
+  for (const storefrontId of ['gb', 'GB']) {
+    const { win, calls } = setup(() => ({ data: [] }), { storefrontId });
+    win.location.pathname = '/playlist/mix/pl.abc';
+    assert.deepEqual(await musicKitBridge(guarded), { ok: false, code: 'PAGE_CHANGED' });
+    assert.equal(calls.length, 0);
+  }
+  const matching = setup(() => ({ data: [] }), { storefrontId: 'US' });
+  matching.win.location.pathname = '/playlist/mix/pl.abc';
+  assert.equal((await musicKitBridge(guarded)).ok, true);
+  for (const expectedPlayerStorefront of [null, '', 'USA', 12, ['us'], {}]) {
+    assert.deepEqual(await musicKitBridge({ ...guarded, expectedPlayerStorefront } as unknown as BridgeRequest),
+      { ok: false, code: 'FORMAT' });
+  }
+  const instance = { storefrontId: 'US' };
+  const { win } = setup(() => {
+    instance.storefrontId = 'gb';
+    return { data: [] };
+  }, { get storefrontId() { return instance.storefrontId; } });
+  win.location.pathname = '/playlist/mix/pl.abc';
+  assert.deepEqual(await musicKitBridge(guarded), { ok: false, code: 'PAGE_CHANGED' });
+});
+test('transient undefined storefront mid-read keeps the pinned catalog region', async () => {
+  let storefrontId: string | undefined = 'us';
+  const { win, calls } = setup(() => {
+    storefrontId = undefined;
+    return { data: [] };
+  }, { get storefrontId() { return storefrontId; } });
+  win.location.pathname = '/playlist/mix/pl.abc';
+  const guarded = { action: 'tracks' as const, offset: 100, expectedPlayerStorefront: 'us',
+    playlist: { id: 'pl.abc', kind: 'catalog' as const, storefront: 'us' } };
+  assert.deepEqual(await musicKitBridge(guarded), { ok: true, data: { tracks: [], total: null, nextOffset: null } });
+  assert.deepEqual(calls, ['/v1/catalog/us/playlists/pl.abc/tracks?limit=100&offset=100']);
+});
+test('getInstance throwing mid-read does not invalidate a pinned catalog response', async () => {
+  const { win } = setup(() => {
+    win.MusicKit.getInstance = () => { throw new Error('reinitializing'); };
+    return { data: [] };
+  }, { storefrontId: 'us' });
+  win.location.pathname = '/playlist/mix/pl.abc';
+  const guarded = { action: 'tracks' as const, offset: 0, expectedPlayerStorefront: 'us',
+    playlist: { id: 'pl.abc', kind: 'catalog' as const, storefront: 'us' } };
+  assert.deepEqual(await musicKitBridge(guarded), { ok: true, data: { tracks: [], total: null, nextOffset: null } });
+});
+test('unavailable or invalid player storefronts are not evidence of a region change', async () => {
+  const guarded = { action: 'tracks' as const, offset: 0, expectedPlayerStorefront: 'us',
+    playlist: { id: 'pl.abc', kind: 'catalog' as const, storefront: 'us' } };
+  for (const value of [undefined, null, '', 'USA', 42, ['us'], {}]) {
+    for (const midRead of [false, true]) {
+      let storefrontId: unknown = midRead ? 'us' : value;
+      const { win } = setup(() => {
+        storefrontId = value;
+        return { data: [] };
+      }, { get storefrontId() { return storefrontId; } });
+      win.location.pathname = '/playlist/mix/pl.abc';
+      assert.deepEqual(await musicKitBridge(guarded), { ok: true, data: { tracks: [], total: null, nextOffset: null } });
+    }
+  }
+});
 test('a hung API request times out without returning partial data', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   setup(() => new Promise(() => {}));
