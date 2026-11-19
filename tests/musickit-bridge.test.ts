@@ -288,6 +288,19 @@ test('regionless pinned reads reject player storefront changes before or during 
   win.location.pathname = '/playlist/mix/pl.abc';
   assert.deepEqual(await musicKitBridge(guarded), { ok: false, code: 'PAGE_CHANGED' });
 });
+test('final metadata rejects a readable storefront switch even while the replacement API initializes', async () => {
+  for (const storefrontId of ['gb', 'GB', 'us', undefined, 'invalid']) {
+    const { win } = setup(() => {
+      win.MusicKit.getInstance = () => ({ storefrontId, api: {} }) as unknown as ReturnType<typeof win.MusicKit.getInstance>;
+      return { data: [{ id: 'pl.abc', type: 'playlists', attributes: { name: 'Catalog', trackCount: 0 } }] };
+    }, { storefrontId: 'us' });
+    win.location.pathname = '/playlist/mix/pl.abc';
+    const result = await musicKitBridge({ action: 'metadata', expectedPlayerStorefront: 'us',
+      playlist: { id: 'pl.abc', kind: 'catalog', storefront: 'us' } });
+    if (storefrontId?.toLowerCase() === 'gb') assert.deepEqual(result, { ok: false, code: 'PAGE_CHANGED' });
+    else assert.equal(result.ok, true);
+  }
+});
 test('transient undefined storefront mid-read keeps the pinned catalog region', async () => {
   let storefrontId: string | undefined = 'us';
   const { win, calls } = setup(() => {

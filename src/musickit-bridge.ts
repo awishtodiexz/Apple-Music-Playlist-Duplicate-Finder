@@ -212,7 +212,10 @@ export async function musicKitBridge(request: BridgeRequest): Promise<BridgeRepl
     const checkPlayerStorefront = (): void => {
       if (expectedPlayerStorefront === undefined) return;
       let current: unknown;
-      try { current = surface()?.instance.storefrontId; } catch { /* untrusted player */ }
+      try {
+        const musicKit = (window as unknown as { MusicKit?: { getInstance?: () => unknown } }).MusicKit;
+        if (typeof musicKit?.getInstance === 'function') current = obj(musicKit.getInstance())?.storefrontId;
+      } catch { /* untrusted player */ }
       if (typeof current === 'string' && /^[a-z]{2}$/i.test(current) &&
         current.toLowerCase() !== expectedPlayerStorefront) fail('PAGE_CHANGED');
     };
