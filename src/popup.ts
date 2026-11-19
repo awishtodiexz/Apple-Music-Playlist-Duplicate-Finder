@@ -568,6 +568,10 @@ function renderResultsNow(): void {
 /** Paint one completed scan. Only a completed scan ever reaches this function. */
 function applyCompleted(completed: CompletedScan): void {
   const changed = lastCompleted !== completed;
+  // Rebuilding the list removes a focused row, and hiding the results hides a focused
+  // control; either would drop keyboard focus onto the body.
+  const listFocused = list.contains(document.activeElement);
+  const resultsFocused = results.contains(document.activeElement);
   lastCompleted = completed;
   currentPlaylistName = completed.playlistName;
   groups = completed.groups;
@@ -600,6 +604,8 @@ function applyCompleted(completed: CompletedScan): void {
   renderSummary();
   if (changed) scanDetails.open = false;
   clearResults.hidden = !completed.cached && completed.totalTracks === 0 && completed.comparison === null;
+  if (resultsFocused && results.hidden) summaryTitle.focus();
+  else if (listFocused) resultsTitle.focus();
 }
 
 resolvedDetails.addEventListener('toggle', () => {
