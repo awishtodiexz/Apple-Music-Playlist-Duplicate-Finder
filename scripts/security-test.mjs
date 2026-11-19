@@ -29,9 +29,16 @@ const report = (path, content, offset, message) => findings.push(`${path}:${line
 
 // 1. Current-file credential patterns. This is not a full Git history scan.
 const credential = /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\bAKIA[A-Z0-9]{16}\b|\bgh[pousr]_[A-Za-z0-9]{36,255}\b|\bgithub_pat_[A-Za-z0-9_]{30,255}\b|\bsk_live_[A-Za-z0-9]{20,255}\b/;
+const signedJwt = /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{16,}(?![A-Za-z0-9_-])/;
+const musicUserToken = /\b(?:Music-User-Token|musicUserToken)["']?\s*[:=]\s*["']?[A-Za-z0-9+/_=.-]{16,}/i;
+const credentialPatterns = [credential, signedJwt, musicUserToken];
+const jwtProbe = [Buffer.from(JSON.stringify({ alg: 'ES256', kid: 'DUMMYKEY01' })).toString('base64url'),
+  Buffer.from(JSON.stringify({ iss: 'DUMMYTEAM1' })).toString('base64url'), 'a'.repeat(86)].join('.');
+assert.ok(signedJwt.test(jwtProbe), 'credential scanner missed a signed JWT');
+assert.ok(musicUserToken.test('"Music-User-Token": "' + 'a'.repeat(32) + '"'), 'credential scanner missed a Music User Token header');
 for (const [path, content] of contents) {
   content.split('\n').forEach((line, index) => {
-    if (credential.test(line)) findings.push(`${path}:${index + 1}: credential pattern detected`);
+    if (credentialPatterns.some(pattern => pattern.test(line))) findings.push(`${path}:${index + 1}: credential pattern detected`);
   });
 }
 

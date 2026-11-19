@@ -104,23 +104,20 @@ test('a modification marker appearing mid-scan invalidates the result', async ()
   await assert.rejects(readPlaylist(changing), { code: 'INCOMPLETE' });
 });
 
-test('a scan that cannot finish in time stops early instead of burning the deadline', async () => {
+test('a slow start does not abort a scan that finishes within its deadline', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   const total = 5_000;
-  let pages = 0;
   const all = entries(total);
   const source: PlaylistSource = {
     metadata: async () => ({ ...info, total }),
     page: async offset => {
-      pages++;
-      await new Promise(resolve => setTimeout(resolve, 150));
+      t.mock.timers.tick(offset < 500 ? 2_000 : 100);
       return { tracks: all.slice(offset, offset + 100), total, nextOffset: null };
     },
   };
-  const startedAt = Date.now();
-  await assert.rejects(readPlaylist(source, () => {}, { deadlineMs: 2_500 }), { code: 'DEADLINE' });
-  const elapsed = Date.now() - startedAt;
-  assert.ok(elapsed < 1_800, `aborted after ${elapsed}ms`);
-  assert.ok(pages < 15, `fetched ${pages} pages`);
+  const result = await readPlaylist(source, undefined, { deadlineMs: 60_000 });
+  assert.equal(result.tracks.length, total);
+  assert.equal(result.countVerified, true);
 });
 
 test('a single retry does not abort a scan that can still finish', async () => {

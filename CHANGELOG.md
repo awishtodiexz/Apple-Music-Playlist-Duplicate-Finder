@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.6.3](https://github.com/awishtodiexz/Apple-Music-Playlist-Duplicate-Finder/releases/tag/v1.6.3) (2026-11-19)
+
 ### Added
 
 - A build-time popup DOM contract check: every element id used by `src/popup.ts` must exist in the shipped HTML and bundle, so a stale markup/code pairing fails before packaging.
@@ -14,12 +16,16 @@
 - Fast typing in the search box coalesces into one list rebuild per burst instead of one per character.
 - Same-title duplicate detection is linear; 25,000 same-title songs group in milliseconds instead of roughly 0.75 seconds.
 - The scan timestamp is visible next to the results without opening Scan details.
-- **Open in a window** reuses and focuses the existing scan window, including after the toolbar popup is reopened.
+- **Open in a window** focuses the window already open for the same tab, including after the toolbar popup is reopened.
 
 ### Fixed
 
 - Completed empty-playlist scans keep **Clear results** available after reopening, so their saved playlist metadata can be removed.
 - The primary **Scan again** button keeps its accent after a completed scan instead of rendering as an outlined secondary button.
+- A slow start no longer stops a scan before the ten-minute deadline.
+- **Open in a window** no longer focuses a scan window that belongs to another tab.
+- Clearing results in one window no longer removes a newer saved scan from another window.
+- The credential check flags signed JWTs and Apple Music user token headers.
 
 ## [1.6.2](https://github.com/awishtodiexz/Apple-Music-Playlist-Duplicate-Finder/releases/tag/v1.6.2) (2026-11-14)
 

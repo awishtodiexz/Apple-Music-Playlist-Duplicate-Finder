@@ -22,7 +22,7 @@ const internalFailure = 'Something went wrong in the extension. Press Retry scan
 
 const policies: Record<ErrorCode, { message: string; recovery: Recovery }> = {
   CANCELLED: { message: 'No partial results were kept.', recovery: 'rescan' },
-  DEADLINE: { message: 'The scan would not finish within the ten-minute limit. No partial results were kept. Press Retry scan on a faster connection, or scan a smaller playlist.', recovery: 'rescan' },
+  DEADLINE: { message: 'The scan reached the ten-minute limit. No partial results were kept. Press Retry scan on a faster connection, or scan a smaller playlist.', recovery: 'rescan' },
   LIMIT: { message: 'This playlist is larger than the extension can scan. No partial results were kept.', recovery: 'none' },
   NOT_PLAYLIST: { message: 'Open a playlist on music.apple.com, then open the extension again.', recovery: 'navigate' },
   PAGE_CHANGED: { message: 'The open playlist or tab changed. Press Retry connection to use it.', recovery: 'reconnect' },

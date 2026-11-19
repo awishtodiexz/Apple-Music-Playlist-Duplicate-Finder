@@ -1,4 +1,4 @@
-Apple Music Playlist Duplicate Finder v1.6.2
+Apple Music Playlist Duplicate Finder v1.6.3
 Requires Chrome or Edge 111 or newer.
 
 INSTALL

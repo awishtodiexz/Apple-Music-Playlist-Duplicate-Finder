@@ -22,6 +22,8 @@ export interface CachedScan {
   version: 1;
   playlistId: string;
   storefront?: string | null;
+  /** Distinguishes two scans of the same playlist taken at the same millisecond. */
+  scanId?: string;
   playlistName: string;
   scannedAt: number;
   groups: DuplicateGroup[];
@@ -36,6 +38,9 @@ export interface CachedScan {
 }
 
 export type CacheFreshness = 'current' | 'changed' | 'unknown';
+
+/** The identity a conditional clear matches: only this exact scan may be removed. */
+export type ScanCacheRef = Pick<CachedScan, 'playlistId' | 'storefront' | 'scannedAt' | 'scanId'>;
 
 /**
  * A scan is stale when a known marker or the known track total differs. Every
@@ -119,7 +124,8 @@ function isCachedScan(value: unknown): value is CachedScan {
     typeof scan.countVerified !== 'boolean' || typeof scan.modificationChecked !== 'boolean' ||
     typeof scan.notes !== 'string' || scan.notes.length > maxNotes ||
     !optionalText(scan.modified) || !optionalText(scan.revision) ||
-    !(scan.storefront == null || /^[a-z]{2}$/.test(scan.storefront))) return false;
+    !(scan.storefront == null || typeof scan.storefront === 'string' && /^[a-z]{2}$/.test(scan.storefront)) ||
+    !(scan.scanId === undefined || typeof scan.scanId === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(scan.scanId))) return false;
   // Every track is either unidentified or belongs to exactly one retained group,
   // so these totals bound the whole cache and catch inconsistent copies/counts.
   const identities = new Set<string>();
@@ -142,10 +148,7 @@ function discardCached(store: Storage): void {
   try { store.removeItem(cacheKey); } catch { /* ignore */ }
 }
 
-/** The last completed scan is cached locally so closing the popup does not lose it. */
-export function loadCachedScan(playlistId: string, storefront: string | null = null): CachedScan | null {
-  const store = storage();
-  if (!store) return null;
+function readCachedScan(store: Storage): CachedScan | null {
   try {
     const raw = store.getItem(cacheKey);
     if (!raw) return null;
@@ -153,11 +156,19 @@ export function loadCachedScan(playlistId: string, storefront: string | null = n
     let value: unknown;
     try { value = JSON.parse(raw); } catch { discardCached(store); return null; }
     if (!isCachedScan(value)) { discardCached(store); return null; }
-    return value.playlistId === playlistId &&
-      (!playlistId.startsWith('pl.') || (storefront !== null && value.storefront === storefront)) ? value : null;
+    return value;
   } catch {
     return null;
   }
+}
+
+/** The last completed scan is cached locally so closing the popup does not lose it. */
+export function loadCachedScan(playlistId: string, storefront: string | null = null): CachedScan | null {
+  const store = storage();
+  if (!store) return null;
+  const scan = readCachedScan(store);
+  return scan && scan.playlistId === playlistId &&
+    (!playlistId.startsWith('pl.') || (storefront !== null && scan.storefront === storefront)) ? scan : null;
 }
 
 function writeCachedScan(store: Storage, raw: string): boolean {
@@ -187,10 +198,13 @@ export function saveCachedScan(scan: CachedScan): boolean {
   return false;
 }
 
-export function clearCachedScan(): void {
+/** Removes only the scan the caller was shown; a newer scan saved meanwhile is kept. */
+export function clearCachedScan(expected: ScanCacheRef): void {
   const store = storage();
   if (!store) return;
-  try { store.removeItem(cacheKey); } catch { /* ignore */ }
+  const scan = readCachedScan(store);
+  if (scan && scan.playlistId === expected.playlistId && (scan.storefront ?? null) === (expected.storefront ?? null) &&
+    scan.scannedAt === expected.scannedAt && scan.scanId === expected.scanId) discardCached(store);
 }
 
 /** Missing, unreadable, or unknown values fall back to the system theme. */
@@ -218,29 +232,4 @@ export function loadScanWindowPreference(): boolean {
 
 export function saveScanWindowPreference(enabled: boolean): void {
   try { storage()?.setItem('amdf:scan-window:v1', String(enabled)); } catch { /* ignore */ }
-}
-
-const popoutWindowKey = 'amdf:popout-window:v1';
-
-/** The scan window this extension opened last; validated against chrome.windows.get before reuse. */
-export function loadPopoutWindowId(): number | null {
-  try {
-    const raw = storage()?.getItem(popoutWindowKey);
-    if (!raw || !/^\d{1,16}$/.test(raw)) return null;
-    const id = Number(raw);
-    return Number.isSafeInteger(id) && id > 0 ? id : null;
-  } catch {
-    return null;
-  }
-}
-
-export function savePopoutWindowId(id: number | null): void {
-  try {
-    const store = storage();
-    if (!store) return;
-    if (id === null || !Number.isSafeInteger(id) || id <= 0) store.removeItem(popoutWindowKey);
-    else store.setItem(popoutWindowKey, String(id));
-  } catch {
-    // A storage failure must not block opening or focusing the window.
-  }
 }

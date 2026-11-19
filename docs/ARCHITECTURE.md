@@ -23,9 +23,9 @@ Titles are never used, and entries without a usable ID are left out and counted 
 
 ## Storage
 
-The last completed scan and the theme choice are kept in `localStorage` (`amdf:last-scan:v1`, `amdf:theme:v1`). The cache is size-limited, validated on load, and marked stale when the playlist's markers or track count change.
+The last completed scan and the theme choice are kept in `localStorage` (`amdf:last-scan:v1`, `amdf:theme:v1`). The cache is size-limited, validated on load, and marked stale when the playlist's markers or track count change. Scan windows share one cache. Reads, saves, and clears use one Web Lock. Clear results only deletes the entry for the scan shown in that window.
 
-The scan-window preference is saved separately (`amdf:scan-window:v1`) and defaults to a separate window. The popup hands a scan to a window pinned to the source tab. Its startup request is consumed once and checked against the connected playlist before scanning. Reloading the window restores results without starting another scan.
+The scan-window preference is saved separately (`amdf:scan-window:v1`) and defaults to a separate window. The popup hands a scan to a window pinned to the source tab. Its startup request is consumed once and checked against the connected playlist before scanning. Reloading the window restores results without starting another scan. Open in a window focuses the live scan window for that source tab, or opens a new one if none exists.
 
 Rescan comparisons use exact duplicate identities from the previous completed scan, including a restored cached scan. If a group gains or loses its catalog ID, a one-to-one match on a known library song ID keeps it from being labeled resolved or new. The cache may omit these optional library IDs to fit within storage limits. Comparisons are shown for the current session and withheld when either scan contains unidentified songs.
 
