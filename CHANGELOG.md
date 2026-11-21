@@ -19,10 +19,11 @@
 
 ### Changed
 
-- Popup accessibility polish: correct connect label, the Settings disclosure hides when it would be empty, disclosure markers are excluded from accessible names, and focus is restored after a failed scan-window handoff.
+- Popup accessibility polish: correct connect label, the Settings disclosure hides when it would be empty, disclosure markers are excluded from accessible names, the feedback live region stays in the accessibility tree, and focus is restored after a failed scan-window handoff.
 - Song names with no artist no longer leave a dangling separator in results, copies or the resolved list.
+- Long song and artist names clamp to two lines in collapsed rows, and the "Since your last scan" comparison gets an accented card.
 - `docs/ARCHITECTURE.md` documents the accepted `amdf:cancel:*` page-world residual risk.
-- Updated popup styling and refreshed light/dark screenshots.
+- Refreshed light/dark screenshots.
 
 ## [1.6.3](https://github.com/awishtodiexz/Apple-Music-Playlist-Duplicate-Finder/releases/tag/v1.6.3) (2026-11-19)
 
