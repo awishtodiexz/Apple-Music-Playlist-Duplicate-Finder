@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-## [1.6.4](https://github.com/awishtodiexz/Apple-Music-Playlist-Duplicate-Finder/releases/tag/v1.6.4) (2026-11-21)
+## [1.6.5](https://github.com/awishtodiexz/Apple-Music-Playlist-Duplicate-Finder/releases/tag/v1.6.5) (2026-11-21)
 
 ### Fixed
 
