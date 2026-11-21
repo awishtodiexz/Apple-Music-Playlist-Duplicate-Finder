@@ -197,6 +197,29 @@ export async function musicKitBridge(request: BridgeRequest): Promise<BridgeRepl
       return musicKit !== undefined && musicKit !== null;
     } catch { return false; }
   };
+  // Cancellation arms before the warm-up wait below, so a dispatch that lands
+  // while MusicKit is still initializing is honored instead of lost. Function
+  // scope keeps the listener reachable from every exit path that disarms it.
+  const controller = new AbortController();
+  const eventName = request.requestId && /^[a-f0-9-]{36}$/.test(request.requestId) ? 'amdf:cancel:' + request.requestId : null;
+  let cancel: (() => void) | undefined;
+  let guardFailure: BridgeErrorCode | null = null;
+  const cancelled = new Promise<never>((_, reject) => {
+    cancel = () => {
+      guardFailure = 'CANCELLED';
+      controller.abort();
+      reject({ safeCode: 'CANCELLED' });
+    };
+    if (eventName) window.addEventListener(eventName, cancel, { once: true });
+  });
+  const disarm = (): void => {
+    if (eventName && cancel) {
+      window.removeEventListener(eventName, cancel);
+      cancel = undefined;
+    }
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let response: unknown;
   try {
     // Validate the request before using any of its fields. A malformed request
     // must fail closed with a fixed code and must never reach the API.
@@ -225,14 +248,14 @@ export async function musicKitBridge(request: BridgeRequest): Promise<BridgeRepl
     // all is a persistent incompatibility, not an initialization race.
     if (!ready && namespacePresent()) {
       for (let attempt = 0; !ready && attempt < readyAttempts; attempt++) {
-        await new Promise<void>(resolve => setTimeout(resolve, readyDelayMs));
+        await Promise.race([new Promise<void>(resolve => setTimeout(resolve, readyDelayMs)), cancelled]);
         checkPage(playlist.storefront);
         ready = surface();
       }
     }
-    if (!ready) return { ok: false, code: 'MUSICKIT_UNAVAILABLE' };
-    const { instance, api, read, useMusic } = ready;
-    if (instance.isAuthorized === false) return { ok: false, code: 'AUTH' };
+    if (guardFailure) fail(guardFailure);
+    const { instance, api, read, useMusic } = ready ?? fail('MUSICKIT_UNAVAILABLE');
+    if (instance.isAuthorized === false) fail('AUTH');
     checkPlayerStorefront();
 
     // The visible route is authoritative. Only fall back to the player's
@@ -248,24 +271,10 @@ export async function musicKitBridge(request: BridgeRequest): Promise<BridgeRepl
     const path = request.action === 'metadata' ? base :
       base + '/tracks?limit=100&offset=' + request.offset + (playlist.kind === 'library' ? '&include=catalog' : '');
 
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let response: unknown;
-    const controller = new AbortController();
-    const eventName = request.requestId && /^[a-f0-9-]{36}$/.test(request.requestId) ? 'amdf:cancel:' + request.requestId : null;
-    let cancel: (() => void) | undefined;
-    let guardFailure: BridgeErrorCode | null = null;
     const operationTimeoutMs = 25_000;
     // The cancellation and timeout guards stay armed through body consumption,
     // not just the fetch itself. A raw Response body is a second asynchronous
     // operation and must not escape the read's route/abort/timeout checks.
-    const cancelled = new Promise<never>((_, reject) => {
-      cancel = () => {
-        guardFailure = 'CANCELLED';
-        controller.abort();
-        reject({ safeCode: 'CANCELLED' });
-      };
-      if (eventName) window.addEventListener(eventName, cancel, { once: true });
-    });
     const timedOut = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         guardFailure = 'TIMEOUT';
@@ -431,9 +440,10 @@ export async function musicKitBridge(request: BridgeRequest): Promise<BridgeRepl
     return { ok: true, data: page };
     } finally {
       clearTimeout(timer);
-      if (eventName && cancel) window.removeEventListener(eventName, cancel);
+      disarm();
     }
   } catch (error) {
+    disarm();
     // Only our fixed codes, never Apple exception text, headers, or tokens.
     // This list mirrors bridgeErrorCodes in types.ts and must stay self-contained:
     // the function is serialized into the page and loses its module scope.

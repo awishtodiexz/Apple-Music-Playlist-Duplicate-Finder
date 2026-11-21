@@ -219,16 +219,23 @@ export function summaryLine(summary: ResultSummary): string {
   }
 }
 
+/** One song for lists and copy text; a missing artist leaves no dangling separator. */
+export function songLabel(group: Pick<DuplicateGroup, 'name' | 'artist'>): string {
+  const artist = group.artist.trim();
+  return artist ? `${group.name} — ${artist}` : group.name;
+}
+
 export function formatResultsText(playlistName: string, groups: readonly DuplicateGroup[],
-  summary: ResultSummary, notes: string): string {
+  summary: ResultSummary, notes: string, scope?: string): string {
   const lines = [
     `Apple Music Playlist Duplicate Finder — ${playlistName}`,
     summaryLine(summary),
   ];
+  if (scope) lines.push(scope);
   if (notes.trim()) lines.push('', notes.trim());
   lines.push('');
   for (const group of groups) {
-    lines.push(`${group.name} — ${group.artist} — ${group.copies.toLocaleString()} ${group.copies === 1 ? 'copy' : 'copies'} ` +
+    lines.push(`${songLabel(group)} — ${group.copies.toLocaleString()} ${group.copies === 1 ? 'copy' : 'copies'} ` +
       `— positions ${group.positions.join(', ')}`);
   }
   return lines.join('\n');
@@ -237,7 +244,7 @@ export function formatResultsText(playlistName: string, groups: readonly Duplica
 /** A single group, for the per-song copy button. */
 export function formatGroupText(group: DuplicateGroup): string {
   const copies = `${group.copies.toLocaleString()} ${group.copies === 1 ? 'copy' : 'copies'}`;
-  return `${group.name} — ${group.artist}\n${copies} · positions ${group.positions.join(', ')}`;
+  return `${songLabel(group)}\n${copies} · positions ${group.positions.join(', ')}`;
 }
 
 // Spreadsheet programs may trim or ignore leading whitespace, control and format

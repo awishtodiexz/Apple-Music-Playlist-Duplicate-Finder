@@ -38,6 +38,24 @@ test('accepts the three MusicKit response envelopes without exposing tokens', as
   }
 });
 
+test('a cancel during MusicKit warm-up ends the read before the API is called', async () => {
+  const target = new EventTarget();
+  let removed = 0;
+  let instanceCalls = 0;
+  const { win, calls } = setup(() => ({}));
+  Object.assign(win.MusicKit, { getInstance: () => ++instanceCalls < 3 ? undefined :
+    { isAuthorized: true, api: { get: (path: string) => { calls.push(path); return { data: [] }; } } } });
+  Object.assign(win, { addEventListener: target.addEventListener.bind(target),
+    removeEventListener: (...args: Parameters<EventTarget['removeEventListener']>) => { removed++; target.removeEventListener(...args); },
+    dispatchEvent: target.dispatchEvent.bind(target) });
+  const requestId = '12345678-1234-1234-1234-123456789abc';
+  const pending = musicKitBridge({ ...request, requestId });
+  cancelMusicKitRead(requestId);
+  assert.deepEqual(await pending, { ok: false, code: 'CANCELLED' });
+  assert.deepEqual(calls, []);
+  assert.equal(removed, 1);
+});
+
 test('v3 cancellation aborts fetchOptions and removes its page event listener', async () => {
   const target = new EventTarget();
   let removed = 0;

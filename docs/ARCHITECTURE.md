@@ -34,6 +34,7 @@ Rescan comparisons use exact duplicate identities from the previous completed sc
 - Apple's API has no snapshot reads. Editing a playlist mid-scan is usually caught, but an edit that keeps the same track count may not be.
 - Scans use a separate window by default and continue when it loses focus. Closing that window cancels its scan. Choosing to scan in the toolbar popup also cancels scanning when the popup loses focus.
 - The integration relies on Apple's web player, which can change without notice.
+- The `amdf:cancel:*` channel runs in the page world, so a hostile page could observe its name or dispatch a forged cancel. That is an accepted residual: the worst outcome is a denied scan, never leaked data or escalated access.
 
 ## Source layout
 

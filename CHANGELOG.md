@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [1.6.4](https://github.com/awishtodiexz/Apple-Music-Playlist-Duplicate-Finder/releases/tag/v1.6.4) (2026-11-21)
+
+### Fixed
+
+- Cancelling a scan during MusicKit start-up is honoured; an early cancel could previously be lost while the read still ran.
+- **Clear results** stays available after a failed rescan of a clean scan instead of flipping visibility.
+- An older row's Copy timer can no longer erase a newer copy confirmation early.
+- Summary wording for empty and fully-skipped playlists matches the actual outcome; the skipped-song note now hides only when nothing could be checked, and stays visible for partial skips the browser suite relies on.
+- Filtered **Copy all** output states its scope ("Filtered to X of Y repeated songs.") instead of implying the full result set.
+- Progress updates no longer re-open Scan details after you collapse them.
+- In forced-colors mode the error status is marked by a shape cue, not colour alone.
+- Opening "Songs no longer repeated" on a very large or tampered cache renders a bounded list.
+- The collapsed row clamp no longer pushes the "New" badge onto its own line, inert row-grid and shadowed rules were removed, and the per-group Copy button aligns right again.
+- The "Show all" render check tolerates shared machines (bound 150→500 ms after 712 ms was measured on an identical build).
+
+### Changed
+
+- Popup accessibility polish: correct connect label, the Settings disclosure hides when it would be empty, disclosure markers are excluded from accessible names, and focus is restored after a failed scan-window handoff.
+- Song names with no artist no longer leave a dangling separator in results, copies or the resolved list.
+- `docs/ARCHITECTURE.md` documents the accepted `amdf:cancel:*` page-world residual risk.
+- Updated popup styling and refreshed light/dark screenshots.
+
 ## [1.6.3](https://github.com/awishtodiexz/Apple-Music-Playlist-Duplicate-Finder/releases/tag/v1.6.3) (2026-11-19)
 
 ### Added
@@ -17,11 +39,14 @@
 - Same-title duplicate detection is linear; 25,000 same-title songs group in milliseconds instead of roughly 0.75 seconds.
 - The scan timestamp is visible next to the results without opening Scan details.
 - **Open in a window** focuses the window already open for the same tab, including after the toolbar popup is reopened.
+- Rescan comparisons match library and catalog transitions by unambiguous catalog IDs and isolate regionless catalog scans and cached results to their resolved storefront.
 
 ### Fixed
 
 - Completed empty-playlist scans keep **Clear results** available after reopening, so their saved playlist metadata can be removed.
 - The primary **Scan again** button keeps its accent after a completed scan instead of rendering as an outlined secondary button.
+- Duplicate rows preserve keyboard focus across rescans.
+- Regionless catalog scans reject storefront switches, including while a replacement MusicKit instance initializes.
 - A slow start no longer stops a scan before the ten-minute deadline.
 - **Open in a window** no longer focuses a scan window that belongs to another tab.
 - Clearing results in one window no longer removes a newer saved scan from another window.
