@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.6.6](https://github.com/awishtodiexz/Apple-Music-Playlist-Duplicate-Finder/releases/tag/v1.6.6) (2026-11-25)
+
 ### Fixed
 
 - Pressing Scan while a scan window for the tab is already open no longer opens a second window and a second scan against Apple Music; the open window is focused and the scan is handed to it.
