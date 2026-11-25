@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Pressing Scan while a scan window for the tab is already open no longer opens a second window and a second scan against Apple Music; the open window is focused and the scan is handed to it.
+- A pop-out now re-checks its tab when it regains focus, as documented. Trimming an over-limit playlist in place re-enables scanning without reloading the window; previously the dead end persisted because in-place edits fire no tab events.
+
 ## [1.6.5](https://github.com/awishtodiexz/Apple-Music-Playlist-Duplicate-Finder/releases/tag/v1.6.5) (2026-11-21)
 
 ### Fixed

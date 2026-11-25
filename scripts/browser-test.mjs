@@ -73,11 +73,14 @@ try {
   const popup = await context.newPage();
   // Explicit Chrome-API adapter: this tests the bundled UI and serialized function in
   // the player's MAIN world. It does NOT test installing the extension or activeTab.
-  await popup.exposeBinding('readPlayerUrl', () => apple.url());
-  await popup.exposeBinding('executeInPlayer', async (_source, payload) => apple.evaluate(
-    ({ functionSource, request }) => (0, eval)('(' + functionSource + ')')(request), payload,
-  ));
-  await popup.addInitScript(version => {
+  const bindPlayer = async page => {
+    await page.exposeBinding('readPlayerUrl', () => apple.url());
+    await page.exposeBinding('executeInPlayer', async (_source, payload) => apple.evaluate(
+      ({ functionSource, request }) => (0, eval)('(' + functionSource + ')')(request), payload,
+    ));
+  };
+  await bindPlayer(popup);
+  const installChromeMock = version => {
     if (location.search.includes('reset')) {
       localStorage.clear();
       // Existing scenarios exercise the explicit inline-scan choice.
@@ -129,7 +132,16 @@ try {
         return [{ frameId: 0, result: await window.executeInPlayer({ functionSource: func.toString(), request: args[0] }) }];
       } },
     };
-  }, manifest.version);
+  };
+  await popup.addInitScript(installChromeMock, manifest.version);
+  // A second live popup page stands in for an already-open scan window.
+  async function spawnPopupPage() {
+    const page = await context.newPage();
+    page.on('pageerror', error => pageErrors.push(error.message));
+    await bindPlayer(page);
+    await page.addInitScript(installChromeMock, manifest.version);
+    return page;
+  }
   const pageErrors = [];
   popup.on('pageerror', error => pageErrors.push(error.message));
   const popupUrl = 'https://playlist-duplicate-finder.test/popup.html';
@@ -1862,7 +1874,11 @@ try {
   assert.equal(await apple.evaluate(() => window.requests.filter(path => path.includes('/tracks?')).length), trackRequests);
   await popup.goto(popupUrl);
   await popup.waitForFunction(() => !document.querySelector('#scan').disabled);
-  await popup.evaluate(() => { chrome.windows.create = async () => { throw new Error('Cannot open window'); }; });
+  // With no scan window open for the tab, a creation failure must be visible.
+  await popup.evaluate(() => {
+    localStorage.setItem('amdf:test:windows', '{}');
+    chrome.windows.create = async () => { throw new Error('Cannot open window'); };
+  });
   await popup.locator('#scan').click();
   await popup.getByRole('heading', { name: 'Could not open a scan window', exact: true }).waitFor();
   assert.equal(await popup.locator('#scan').isEnabled(), true);
@@ -1874,6 +1890,62 @@ try {
   await scanScenario('duplicates');
   assert.equal(await popup.locator('#status-title').textContent(), 'Scan complete');
   console.log('PASS: default window handoff, one-shot autostart, playlist guard, visible window failure and remembered inline choice');
+
+  // Pressing Scan while a pop-out for the tab is already open must not duplicate the
+  // window: the existing one is focused and the scan is handed to it through storage.
+  await apple.evaluate(() => {
+    window.scenario = 'duplicates';
+    window.requests = [];
+    window.fixtureDelay = 25;
+    history.replaceState({}, '', '/us/library/playlist/p.fixture');
+  });
+  await popup.evaluate(() => localStorage.clear());
+  const scanWin = await spawnPopupPage();
+  await scanWin.goto(popupUrl + '?tab=1');
+  await scanWin.waitForFunction(() => document.querySelector('#status-title').textContent === 'Ready to scan');
+  await popup.evaluate(url => {
+    localStorage.setItem('amdf:test:windows', JSON.stringify({ 55: url }));
+  }, scanWin.url());
+  await popup.goto(popupUrl);
+  await popup.waitForFunction(() => !document.querySelector('#scan').disabled);
+  const createsBefore = await popup.evaluate(() => Number(localStorage.getItem('amdf:test:createCount')) || 0);
+  await popup.locator('#scan').click();
+  // The scan runs to completion in the existing window without a click there.
+  await scanWin.waitForFunction(() => document.querySelector('#status-title').textContent === 'Scan complete');
+  // The cache write is still in flight when the completion renders; wait for it
+  // so nothing can re-write storage after a later clear.
+  await scanWin.waitForFunction(() => localStorage.getItem('amdf:last-scan:v1') !== null);
+  assert.equal(await popup.evaluate(() => Number(localStorage.getItem('amdf:test:createCount')) || 0), createsBefore,
+    'no second scan window may be created');
+  const focusedWindow = JSON.parse(await popup.evaluate(() => localStorage.getItem('amdf:test:updatedWindow') || 'null'));
+  assert.equal(focusedWindow?.id, 55);
+  assert.equal(focusedWindow?.info?.focused, true);
+  // The handed-off scan request is single-use.
+  assert.equal(await popup.evaluate(() => localStorage.getItem('amdf:scan-request:v1')), null);
+  console.log('PASS: scan handoff focuses an open pop-out instead of duplicating it, and the scan runs there once');
+
+  // An over-limit pop-out re-checks its tab when it regains focus, so trimming the
+  // playlist in place (no navigation, no tab events) re-enables scanning.
+  await apple.evaluate(() => { window.scenario = 'huge'; window.requests = []; });
+  // A cached scan would keep the failure beside valid results; the dead end only
+  // exists with nothing on screen.
+  await scanWin.evaluate(() => localStorage.clear());
+  await scanWin.goto(popupUrl + '?tab=1');
+  await scanWin.waitForFunction(() => document.querySelector('#status-title').textContent === 'Playlist too large to scan');
+  assert.equal(await scanWin.locator('#scan').isVisible(), false);
+  await apple.evaluate(() => { window.scenario = 'duplicates'; window.requests = []; });
+  await scanWin.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await scanWin.waitForFunction(() => document.querySelector('#status-title').textContent === 'Ready to scan');
+  assert.equal(await scanWin.locator('#scan').isVisible(), true);
+  assert.ok(await apple.evaluate(() => window.requests.length > 0), 'focus must re-check the playlist');
+  // Focusing again without a change must not reinitialize.
+  const requestsBeforeFocus = await apple.evaluate(() => window.requests.length);
+  await scanWin.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await scanWin.waitForTimeout(500);
+  assert.equal(await apple.evaluate(() => window.requests.length), requestsBeforeFocus,
+    'an unchanged playlist must not be refetched on focus');
+  await scanWin.close();
+  console.log('PASS: a pop-out re-checks its tab on focus, recovering from an in-place trim without refetching when unchanged');
 
   assert.deepEqual([...requestOrigins].sort(), ['https://music.apple.com', 'https://playlist-duplicate-finder.test'],
     'the popup and fixtures must not contact any other origin');

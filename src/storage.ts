@@ -233,3 +233,42 @@ export function loadScanWindowPreference(): boolean {
 export function saveScanWindowPreference(enabled: boolean): void {
   try { storage()?.setItem('amdf:scan-window:v1', String(enabled)); } catch { /* ignore */ }
 }
+
+// A scan handed off to an already-open pop-out cannot travel in the URL the way a
+// new window's startup scan does, so it is written here; the pop-out's storage
+// listener picks it up. The payload is small, single-use and short-lived: a
+// request older than a few seconds belongs to a handoff that never arrived.
+export const scanRequestKey = 'amdf:scan-request:v1';
+const scanRequestMaxAgeMs = 15_000;
+
+export interface ScanRequest {
+  tab: number;
+  at: number;
+}
+
+/** Never throws; a missing or full storage simply drops the request. */
+export function writeScanRequest(tabId: number): void {
+  const store = storage();
+  if (!store) return;
+  try { store.setItem(scanRequestKey, JSON.stringify({ tab: tabId, at: Date.now() })); } catch { /* ignore */ }
+}
+
+/** Validates an untrusted stored payload: right shape, plausible tab id, and fresh. */
+export function readScanRequest(raw: string, now: number = Date.now()): ScanRequest | null {
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { return null; }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const request = value as Partial<ScanRequest>;
+  if (!isCount(request.tab) || request.tab < 1 || typeof request.at !== 'number' ||
+    !Number.isFinite(request.at) || request.at <= 0) return null;
+  const age = now - request.at;
+  if (age < 0 || age > scanRequestMaxAgeMs) return null;
+  return { tab: request.tab, at: request.at };
+}
+
+/** Removes only the request the caller was shown; a newer write meanwhile is kept. */
+export function consumeScanRequest(expected: string): void {
+  const store = storage();
+  if (!store) return;
+  try { if (store.getItem(scanRequestKey) === expected) store.removeItem(scanRequestKey); } catch { /* ignore */ }
+}

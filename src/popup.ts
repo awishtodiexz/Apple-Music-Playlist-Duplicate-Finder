@@ -4,7 +4,7 @@ import { connectFailure, errorCode, errorMessage, errorRecovery, recoveryLabel, 
 import { readPlaylist, scanLimits, type PlaylistSource, type ScanProgress } from './playlist-reader';
 import { detectPlaylist } from './playlist-url';
 import { appleMusicId, compareScans, comparisonText, csvFilename, exportLabels, formatGroupText, formatResultsText, lookalikeIdentities, outcomeTitle, positionParts, scanOutcome, songLabel, splitPositions, summarize, summaryLine, toCsv, visibleGroups, type ResultSummary, type SortMode } from './results';
-import { cacheFreshness, clearCachedScan, loadCachedScan, loadScanWindowPreference, loadThemePreference, saveCachedScan, saveScanWindowPreference, saveThemePreference, type CachedScan, type CacheFreshness, type ScanCacheRef } from './storage';
+import { cacheFreshness, clearCachedScan, consumeScanRequest, loadCachedScan, loadScanWindowPreference, loadThemePreference, readScanRequest, saveCachedScan, saveScanWindowPreference, saveThemePreference, scanRequestKey, writeScanRequest, type CachedScan, type CacheFreshness, type ScanCacheRef } from './storage';
 import { nextTheme, themeLabel, type ThemePreference } from './theme';
 import type { DuplicateGroup, PlaylistInfo, PlaylistRef } from './types';
 
@@ -194,13 +194,11 @@ async function openWindow(autoScan: boolean): Promise<void> {
 }
 
 /**
- * Focus the pop-out already open for this tab, or open one. Windows are matched
- * by asking which extension views they host: each pop-out is pinned to its
- * source tab, so only a window showing this tab's popup counts.
+ * The pop-out already open for this tab, or null. Windows are matched by asking
+ * which extension views they host: each pop-out is pinned to its source tab, so
+ * only a window showing this tab's popup counts.
  */
-async function focusOrOpenWindow(): Promise<void> {
-  const tabId = connectedTabId;
-  if (tabId === null) return;
+async function scanWindowForTab(tabId: number): Promise<number | null> {
   const popupUrl = new URL(chrome.runtime.getURL('popup.html'));
   for (const { id } of await chrome.windows.getAll({ windowTypes: ['popup'] })) {
     if (id === undefined) continue;
@@ -209,9 +207,19 @@ async function focusOrOpenWindow(): Promise<void> {
       return url.protocol === popupUrl.protocol && url.host === popupUrl.host && url.pathname === popupUrl.pathname &&
         pinnedTabId(url.search) === tabId;
     });
-    if (!matches) continue;
+    if (matches) return id;
+  }
+  return null;
+}
+
+/** Focus the pop-out already open for this tab, or open one. */
+async function focusOrOpenWindow(): Promise<void> {
+  const tabId = connectedTabId;
+  if (tabId === null) return;
+  const existing = await scanWindowForTab(tabId);
+  if (existing !== null) {
     try {
-      await chrome.windows.update(id, { focused: true });
+      await chrome.windows.update(existing, { focused: true });
       return;
     } catch { /* The matching window may have closed after enumeration. */ }
   }
@@ -965,6 +973,21 @@ if (pinnedTab !== null) {
     }
   });
   chrome.tabs.onRemoved?.addListener(tabId => { if (tabId === pinnedTab) void recheckPinnedTab(); });
+  // Editing the playlist in place moves neither the URL nor the loading status, so no
+  // tab event fires. Focus is the backstop: it matters most when the last failure
+  // offered no retry, because an over-limit playlist may have been trimmed in place.
+  window.addEventListener('focus', () => { void recheckPinnedTab(); });
+  // A scan handed off from the toolbar popup arrives here when this window was
+  // already open for the tab. Consume it once; a scan or connect already under
+  // way fulfills the intent, so a busy window drops it.
+  window.addEventListener('storage', event => {
+    if (event.key !== scanRequestKey || typeof event.newValue !== 'string') return;
+    const request = readScanRequest(event.newValue);
+    if (request === null || request.tab !== pinnedTab) return;
+    consumeScanRequest(event.newValue);
+    if (busy) return;
+    void startScan();
+  });
 }
 
 /** Draw more rows and move focus to the first new one, so the revealing button can hide safely. */
@@ -1086,6 +1109,19 @@ async function startScan(): Promise<void> {
     scan.disabled = true;
     updatePopOut();
     try {
+      // A pop-out already open for this tab must not be duplicated: focus it and
+      // hand the scan over through storage, the way a new window's startup scan
+      // travels in its URL. Two windows scanning one playlist would double the
+      // request volume against Apple Music.
+      const tabId = connectedTabId;
+      const existing = tabId === null ? null : await scanWindowForTab(tabId);
+      if (existing !== null && tabId !== null) {
+        try {
+          await chrome.windows.update(existing, { focused: true });
+          writeScanRequest(tabId);
+          return;
+        } catch { /* The matching window may have closed after enumeration. */ }
+      }
       await openWindow(true);
     } catch {
       setStatus('Could not open a scan window', 'Try again, or turn off “Keep scans open in a separate window” to scan here.');
