@@ -4,7 +4,7 @@ import { connectFailure, errorCode, errorMessage, errorRecovery, recoveryLabel, 
 import { readPlaylist, scanLimits, type PlaylistSource, type ScanProgress } from './playlist-reader';
 import { detectPlaylist } from './playlist-url';
 import { appleMusicId, compareScans, comparisonText, csvFilename, exportLabels, formatGroupText, formatResultsText, lookalikeIdentities, outcomeTitle, positionParts, scanOutcome, songLabel, splitPositions, summarize, summaryLine, toCsv, visibleGroups, type ResultSummary, type SortMode } from './results';
-import { cacheFreshness, clearCachedScan, consumeScanRequest, loadCachedScan, loadScanWindowPreference, loadThemePreference, readScanRequest, saveCachedScan, saveScanWindowPreference, saveThemePreference, scanRequestKey, writeScanRequest, type CachedScan, type CacheFreshness, type ScanCacheRef } from './storage';
+import { cacheFreshness, clearCachedScan, consumeScanRequest, loadCachedScan, loadScanWindowPreference, loadThemePreference, readScanRequest, saveCachedScan, saveScanWindowPreference, saveThemePreference, scanRequestKeyForTab, storedScanRequest, writeScanRequest, type CachedScan, type CacheFreshness, type ScanCacheRef } from './storage';
 import { nextTheme, themeLabel, type ThemePreference } from './theme';
 import type { DuplicateGroup, PlaylistInfo, PlaylistRef } from './types';
 
@@ -108,6 +108,8 @@ let totalTracks = 0;
 let unidentified = 0;
 let scanNotes = '';
 let scanController: AbortController | null = null;
+// Latest reading progress, for the scan window's title. Cleared with the scan.
+let scanReading: { retrieved: number; total: number | null } | null = null;
 // Progress arrives once per page, so the text is rewritten at most this often.
 const statusThrottleMs = 1_000;
 
@@ -194,20 +196,40 @@ async function openWindow(autoScan: boolean): Promise<void> {
 }
 
 /**
- * The pop-out already open for this tab, or null. Windows are matched by asking
- * which extension views they host: each pop-out is pinned to its source tab, so
- * only a window showing this tab's popup counts.
+ * The pop-out already open for this tab, or null. Windows are matched against
+ * live extension contexts (or extension views before Chrome 116): each pop-out
+ * is pinned to its source tab, so only a window showing this tab's popup counts.
+ * Contexts are filtered by window, never by context type: an extension page in a
+ * popup-type window is a TAB context in real Chromium (POPUP is the action popup).
  */
 async function scanWindowForTab(tabId: number): Promise<number | null> {
   const popupUrl = new URL(chrome.runtime.getURL('popup.html'));
-  for (const { id } of await chrome.windows.getAll({ windowTypes: ['popup'] })) {
-    if (id === undefined) continue;
-    const matches = chrome.extension.getViews({ windowId: id }).some(view => {
-      const url = new URL(view.location.href);
+  const isPopupForTab = (href: string | undefined): boolean => {
+    if (!href) return false;
+    try {
+      const url = new URL(href);
       return url.protocol === popupUrl.protocol && url.host === popupUrl.host && url.pathname === popupUrl.pathname &&
         pinnedTabId(url.search) === tabId;
-    });
-    if (matches) return id;
+    } catch {
+      return false;
+    }
+  };
+  const popupWindowIds = (await chrome.windows.getAll({ windowTypes: ['popup'] }))
+    .map(({ id }) => id).filter((id): id is number => id !== undefined);
+  if (popupWindowIds.length === 0) return null;
+  // runtime.getContexts is the MV3 API (Chrome 116+). extension.getViews remains
+  // the fallback because the extension still supports Chrome 111.
+  if (typeof chrome.runtime.getContexts === 'function') {
+    try {
+      const contexts = await chrome.runtime.getContexts({ windowIds: popupWindowIds });
+      const match = contexts.find(context => isPopupForTab(context.documentUrl));
+      return match?.windowId ?? null;
+    } catch { /* Fall through to the pre-116 view API. */ }
+  }
+  for (const id of popupWindowIds) {
+    try {
+      if (chrome.extension.getViews({ windowId: id }).some(view => isPopupForTab(view.location.href))) return id;
+    } catch { /* A window can close between enumeration and inspection. */ }
   }
   return null;
 }
@@ -257,6 +279,26 @@ interface StatusOptions {
   phase?: ScanProgress['phase'];
 }
 
+/**
+ * A scan window spends most of its life in the background, so its title is the one
+ * place scan state stays visible in the taskbar and window switcher. Results win
+ * over connect and failure states; an active scan wins over everything.
+ */
+function syncDocumentTitle(): void {
+  const base = 'Apple Music Playlist Duplicate Finder';
+  let headline = '';
+  if (scanController) {
+    headline = 'Scanning playlist…';
+    if (scanReading?.total) {
+      const percent = Math.min(100, Math.floor(scanReading.retrieved / scanReading.total * 100));
+      headline = `Scanning playlist · ${percent}%`;
+    }
+  }
+  else if (!scanSummary.hidden && summaryTitle.textContent) headline = summaryTitle.textContent;
+  else if (busy || failure) headline = statusTitle.textContent ?? '';
+  document.title = headline ? `${headline} — ${base}` : base;
+}
+
 function setStatus(title: string, detail: string, { error = false, code, problem, phase }: StatusOptions = {}): void {
   // Assigning identical text still replaces the node and re-triggers a live
   // region announcement, so only write what actually changed.
@@ -272,6 +314,7 @@ function setStatus(title: string, detail: string, { error = false, code, problem
   statusCode.hidden = !code;
   announceStatus(phase ?? title, phase !== undefined,
     [title, detail, problem?.message ?? '', code ? `Error code ${code}` : ''].filter(Boolean).map(endSentence).join(' '));
+  syncDocumentTitle();
 }
 
 /** Titles carry no final period and details do; a screen reader needs exactly one pause between them. */
@@ -322,6 +365,7 @@ function clearGroups(): void {
   resultsSort.value = 'playlist';
   clearResults.hidden = true;
   updateSettingsVisibility();
+  syncDocumentTitle();
 }
 
 function currentGroups(): DuplicateGroup[] {
@@ -364,7 +408,8 @@ function buildGroup(group: DuplicateGroup): HTMLLIElement {
   const { later } = splitPositions(group);
   const item = document.createElement('li');
   item.tabIndex = -1;
-  const title = document.createElement('p');
+  // A span, not a p: summary content is limited to phrasing and heading content.
+  const title = document.createElement('span');
   title.className = 'title';
   const song = document.createElement('span');
   song.className = 'song';
@@ -658,6 +703,7 @@ function renderSummary(): void {
   coverageNote.hidden = completed.unidentified === 0 || outcome === 'unchecked';
   coverageNote.textContent = `${number(completed.unidentified)} ${completed.unidentified === 1 ? 'song was' : 'songs were'} skipped, so some repeats may be missing.`;
   updateScanLabel();
+  syncDocumentTitle();
 }
 
 /** Caveats the summary line does not already state. */
@@ -700,7 +746,7 @@ function restoreCached(cached: CachedScan): CompletedScan {
 
 function formatDate(timestamp: number): string {
   return new Date(timestamp).toLocaleString([], {
-    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+    year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
   });
 }
 
@@ -780,7 +826,7 @@ function downloadCsv(): void {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
-  anchor.download = csvFilename(currentPlaylistName || 'playlist');
+  anchor.download = csvFilename(currentPlaylistName || 'playlist', new Date(lastCompleted?.scannedAt ?? Date.now()));
   document.body.append(anchor);
   anchor.click();
   anchor.remove();
@@ -935,7 +981,9 @@ async function initialize(): Promise<void> {
     updateScanLabel();
     updatePopOut();
     if (refocus) focusScan();
+    if (!recheckPending) adoptScanRequest();
     replayRecheck();
+    syncDocumentTitle();
   }
 }
 
@@ -964,6 +1012,29 @@ function replayRecheck(): void {
   recheckPending = false;
   void recheckPinnedTab();
 }
+/**
+ * Start a scan handed to this pop-out, or leave it stored while a connect or clear finishes.
+ * A request that arrives during a scan is consumed and dropped: that scan already fulfills it.
+ */
+function adoptScanRequest(raw?: string): void {
+  const pinned = pinnedTabId();
+  if (pinned === null) return;
+  const stored = raw ? (() => {
+    const request = readScanRequest(raw);
+    return request ? { raw, request } : null;
+  })() : storedScanRequest(pinned);
+  if (!stored || stored.request.tab !== pinned) return;
+  if (scanController !== null) {
+    consumeScanRequest(pinned, stored.raw);
+    return;
+  }
+  if (busy || clearingResults || !currentPlaylist) return;
+  consumeScanRequest(pinned, stored.raw);
+  if (stored.request.playlist && stored.request.playlist !== currentPlaylist.id) return;
+  if (!source || failure) return;
+  void startScan();
+}
+
 const pinnedTab = pinnedTabId();
 if (pinnedTab !== null) {
   // Apple Music navigates without reloading, so a URL change alone (no status) counts too.
@@ -978,15 +1049,11 @@ if (pinnedTab !== null) {
   // offered no retry, because an over-limit playlist may have been trimmed in place.
   window.addEventListener('focus', () => { void recheckPinnedTab(); });
   // A scan handed off from the toolbar popup arrives here when this window was
-  // already open for the tab. Consume it once; a scan or connect already under
-  // way fulfills the intent, so a busy window drops it.
+  // already open for the tab. A scan already running fulfills it; a connect in
+  // progress leaves it stored so it can start as soon as the playlist is ready.
   window.addEventListener('storage', event => {
-    if (event.key !== scanRequestKey || typeof event.newValue !== 'string') return;
-    const request = readScanRequest(event.newValue);
-    if (request === null || request.tab !== pinnedTab) return;
-    consumeScanRequest(event.newValue);
-    if (busy) return;
-    void startScan();
+    if (event.key !== scanRequestKeyForTab(pinnedTab) || typeof event.newValue !== 'string') return;
+    adoptScanRequest(event.newValue);
   });
 }
 
@@ -1023,8 +1090,17 @@ resetFilters.addEventListener('click', () => {
 });
 
 // "/" is the common search shortcut; Escape clears the query before the popup closes.
+// Ctrl/Cmd+F means "find in this list" here: the browser's own find-in-page bar
+// cannot search a virtualized list and is useless inside an extension popup.
 document.addEventListener('keydown', event => {
-  if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+  if (event.defaultPrevented || event.altKey) return;
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'f' && !results.hidden) {
+    event.preventDefault();
+    resultsSearch.focus();
+    resultsSearch.select();
+    return;
+  }
+  if (event.ctrlKey || event.metaKey) return;
   const target = event.target as HTMLElement | null;
   const typing = !!target && (target.tagName === 'INPUT' || target.tagName === 'SELECT' ||
     target.tagName === 'TEXTAREA' || target.isContentEditable);
@@ -1081,12 +1157,21 @@ clearResults.addEventListener('click', async () => {
     source ? 'Run a scan to find repeated songs again.' : `Press ${scan.textContent}, then scan again.`);
   // The button that had focus is now hidden; keep keyboard users in the popup.
   focusScan();
+  adoptScanRequest();
 });
+
+function elapsedText(elapsedMs: number): string {
+  const seconds = Math.floor(elapsedMs / 1000);
+  if (seconds < 60) return `${seconds}s elapsed`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return `${minutes}m${remainder ? ` ${remainder}s` : ''} elapsed`;
+}
 
 /** One progress report as status text. A retry says so, because the wait looks like a freeze. */
 function progressStatus(event: ScanProgress, keepNote: string): { title: string; detail: string } {
   const count = event.total === null ? number(event.retrieved) : `${number(event.retrieved)} of ${number(event.total)}`;
-  const retrieved = `${count} songs retrieved · ${Math.floor(event.elapsedMs / 1000)}s elapsed`;
+  const retrieved = `${count} songs retrieved · ${elapsedText(event.elapsedMs)}`;
   const keepOpen = `Keep this open while scanning.${keepNote}`;
   switch (event.phase) {
     case 'validating':
@@ -1118,13 +1203,13 @@ async function startScan(): Promise<void> {
       if (existing !== null && tabId !== null) {
         try {
           await chrome.windows.update(existing, { focused: true });
-          writeScanRequest(tabId);
+          writeScanRequest(tabId, currentPlaylist.id);
           return;
         } catch { /* The matching window may have closed after enumeration. */ }
       }
       await openWindow(true);
     } catch {
-      setStatus('Could not open a scan window', 'Try again, or turn off “Keep scans open in a separate window” to scan here.');
+      setStatus('Could not open a scan window', 'Try again, or turn off “Scan in a separate window” to scan here.');
     } finally {
       busy = false;
       scan.disabled = false;
@@ -1181,6 +1266,7 @@ async function startScan(): Promise<void> {
         progress.max = event.total;
         progress.value = event.retrieved;
       } else progress.removeAttribute('value');
+      if (event.phase === 'reading') scanReading = { retrieved: event.retrieved, total: event.total };
       const { title, detail } = progressStatus(event, keepNote);
       setStatus(title, detail, { phase: event.phase });
     }, { signal: controller.signal, ...(baselineInfo ? { info: baselineInfo } : {}) });
@@ -1255,8 +1341,10 @@ async function startScan(): Promise<void> {
     updateScanLabel();
     updatePopOut();
     progress.hidden = true;
+    scanReading = null;
     if (restoreFocus) focusScan();
     replayRecheck();
+    syncDocumentTitle();
   }
 }
 scan.addEventListener('click', () => { void startScan(); });

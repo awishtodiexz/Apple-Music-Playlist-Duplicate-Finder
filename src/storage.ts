@@ -236,39 +236,59 @@ export function saveScanWindowPreference(enabled: boolean): void {
 
 // A scan handed off to an already-open pop-out cannot travel in the URL the way a
 // new window's startup scan does, so it is written here; the pop-out's storage
-// listener picks it up. The payload is small, single-use and short-lived: a
-// request older than a few seconds belongs to a handoff that never arrived.
+// listener picks it up. Each tab has its own entry so simultaneous handoffs cannot
+// overwrite one another. A request older than 45 seconds never arrived.
 export const scanRequestKey = 'amdf:scan-request:v1';
-const scanRequestMaxAgeMs = 15_000;
+export const scanRequestKeyForTab = (tabId: number): string => `${scanRequestKey}:${tabId}`;
+const scanRequestMaxAgeMs = 45_000;
 
 export interface ScanRequest {
   tab: number;
   at: number;
+  playlist?: string;
 }
 
 /** Never throws; a missing or full storage simply drops the request. */
-export function writeScanRequest(tabId: number): void {
+export function writeScanRequest(tabId: number, playlistId?: string): void {
   const store = storage();
   if (!store) return;
-  try { store.setItem(scanRequestKey, JSON.stringify({ tab: tabId, at: Date.now() })); } catch { /* ignore */ }
+  try {
+    store.setItem(scanRequestKeyForTab(tabId), JSON.stringify({ tab: tabId, at: Date.now(), ...(playlistId ? { playlist: playlistId } : {}) }));
+  } catch { /* ignore */ }
 }
 
-/** Validates an untrusted stored payload: right shape, plausible tab id, and fresh. */
+/** Validates an untrusted stored payload: right shape, plausible tab id and playlist, and fresh. */
 export function readScanRequest(raw: string, now: number = Date.now()): ScanRequest | null {
   let value: unknown;
   try { value = JSON.parse(raw); } catch { return null; }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const request = value as Partial<ScanRequest>;
   if (!isCount(request.tab) || request.tab < 1 || typeof request.at !== 'number' ||
-    !Number.isFinite(request.at) || request.at <= 0) return null;
+    !Number.isFinite(request.at) || request.at <= 0 ||
+    !(request.playlist === undefined || typeof request.playlist === 'string' && playlistIdPattern.test(request.playlist))) return null;
   const age = now - request.at;
   if (age < 0 || age > scanRequestMaxAgeMs) return null;
-  return { tab: request.tab, at: request.at };
+  return { tab: request.tab, at: request.at, ...(request.playlist ? { playlist: request.playlist } : {}) };
+}
+
+/** The live stored request plus its exact raw payload, so consuming it cannot remove a newer write. */
+export function storedScanRequest(tabId: number, now: number = Date.now()): { raw: string; request: ScanRequest } | null {
+  const store = storage();
+  if (!store) return null;
+  try {
+    const raw = store.getItem(scanRequestKeyForTab(tabId));
+    if (!raw) return null;
+    const request = readScanRequest(raw, now);
+    return request?.tab === tabId ? { raw, request } : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Removes only the request the caller was shown; a newer write meanwhile is kept. */
-export function consumeScanRequest(expected: string): void {
+export function consumeScanRequest(tabId: number, expected: string): void {
   const store = storage();
   if (!store) return;
-  try { if (store.getItem(scanRequestKey) === expected) store.removeItem(scanRequestKey); } catch { /* ignore */ }
+  const key = scanRequestKeyForTab(tabId);
+  try { if (store.getItem(key) === expected) store.removeItem(key); } catch { /* ignore */ }
 }

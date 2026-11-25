@@ -268,7 +268,9 @@ export function toCsv(groups: readonly DuplicateGroup[]): string {
 }
 
 export function csvFilename(playlistName: string, scannedAt: Date = new Date()): string {
-  const base = playlistName.replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'playlist';
-  const date = scannedAt.toISOString().slice(0, 10);
+  const unicodeSafe = playlistName.replace(/[^\p{L}\p{N}\p{M}\p{Extended_Pictographic}\u200d._-]+/gu, '-').replace(/^-+|-+$/g, '');
+  const base = [...unicodeSafe].slice(0, 60).join('').replace(/-+$/g, '') || 'playlist';
+  const pad = (part: number): string => String(part).padStart(2, '0');
+  const date = `${scannedAt.getFullYear()}-${pad(scannedAt.getMonth() + 1)}-${pad(scannedAt.getDate())}`;
   return `apple-music-duplicates-${base}-${date}.csv`;
 }

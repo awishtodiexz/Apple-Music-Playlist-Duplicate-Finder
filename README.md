@@ -48,9 +48,9 @@ To update, extract the new ZIP over the same folder and click **Reload** on the 
 
 1. Open a playlist on [music.apple.com](https://music.apple.com) while signed in.
 2. Click the extension icon and press **Scan for duplicates**.
-3. The scan starts in a separate window, so you can click back into Apple Music while it runs. Keep that window open until it finishes. To scan in the toolbar popup instead, open **Settings** and turn off **Keep scans open in a separate window**.
+3. The scan starts in a separate window, so you can click back into Apple Music while it runs. Keep that window open until it finishes; its title shows the scan's progress and result, so you can see it finish from the taskbar. To scan in the toolbar popup instead, open **Settings** and turn off **Scan in a separate window**.
 
-The headline shows how many songs repeat. Each song row shows how many copies it has; expand it to see every playlist position where it appears. Search stays visible, while **Filter, sort & export** contains the minimum-copy filter, sort order, Copy, and CSV controls.
+The headline shows how many songs repeat. Each song row shows how many copies it has; expand it to see every playlist position where it appears. Search stays visible, while **Filter, sort & export** contains the minimum-copy filter, sort order, Copy, and CSV controls. Press `/` or Ctrl+F (Cmd+F on a Mac) to jump to search.
 
 The extension only shows results. If you want to remove copies, do it yourself in Apple Music, then press **Scan again**. A **Since your last scan** note above the list says how the extra-copy count changed and which songs no longer repeat. If either scan contains songs without usable IDs, the note says changes cannot be confirmed.
 

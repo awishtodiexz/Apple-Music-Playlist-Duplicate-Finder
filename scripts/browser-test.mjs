@@ -87,7 +87,21 @@ try {
       localStorage.setItem('amdf:scan-window:v1', 'false');
     }
     window.chrome = {
-      runtime: { getManifest: () => ({ version }), getURL: path => 'https://playlist-duplicate-finder.test/' + path },
+      runtime: {
+        getManifest: () => ({ version }),
+        getURL: path => 'https://playlist-duplicate-finder.test/' + path,
+        getContexts: async filter => {
+          const windows = JSON.parse(localStorage.getItem('amdf:test:windows') || '{}');
+          // Real Chromium reports an extension page in a popup-type window as a TAB
+          // context; POPUP is only the action popup. The mock must match that truth.
+          return Object.entries(windows).filter(([, url]) => url).map(([id, url]) => ({
+            contextId: `context-${id}`, contextType: 'TAB', documentUrl: url, frameId: 0,
+            incognito: false, tabId: -1, windowId: Number(id),
+          })).filter(context =>
+            (!filter?.contextTypes || filter.contextTypes.includes(context.contextType)) &&
+            (!filter?.windowIds || filter.windowIds.includes(context.windowId)));
+        },
+      },
       action: {
         setBadgeText: async ({ text, tabId }) => { window.__badge = text; window.__badgeTabId = tabId; },
         setBadgeBackgroundColor: async ({ tabId }) => { window.__badgeColorTabId = tabId; },
@@ -114,6 +128,7 @@ try {
       },
       extension: {
         getViews: ({ windowId }) => {
+          window.__getViewsUsed = (window.__getViewsUsed || 0) + 1;
           const url = JSON.parse(localStorage.getItem('amdf:test:windows') || '{}')[windowId];
           return url ? [{ location: { href: url } }] : [];
         },
@@ -229,6 +244,9 @@ try {
       assert.equal(await popup.locator('.song-details').evaluate(el => el.open), false);
       assert.equal(await popup.locator('#summary-title').textContent(), '1 song repeats');
       assert.equal(await popup.locator('#summary-detail').textContent(), '2 extra copies · 245 songs scanned');
+      // The window title carries the scan outcome so a background scan window is
+      // readable in the taskbar and window switcher.
+      assert.equal(await popup.evaluate(() => document.title), '1 song repeats — Apple Music Playlist Duplicate Finder');
       assert.equal(await popup.locator('.copy-count').textContent(), '3 copies');
       // Read-only: nothing on screen offers to remove, check off or verify songs.
       assert.equal(await popup.locator('#checklist-toggle, #removal-checklist, #verify-changes, #back-results, .remove-count').count(), 0);
@@ -473,6 +491,10 @@ try {
     // "/" focuses search, Escape clears it, and the empty state can reset filters.
     await popup.keyboard.press('/');
     assert.equal(await popup.evaluate(() => document.activeElement?.id), 'results-search');
+    // Ctrl/Cmd+F also focuses search: the browser find bar cannot search a virtualized list.
+    await popup.locator('#results-title').focus();
+    await popup.keyboard.press('Control+f');
+    assert.equal(await popup.evaluate(() => document.activeElement?.id), 'results-search');
     const focusRing = await popup.evaluate(() => {
       const active = document.activeElement;
       const style = getComputedStyle(active);
@@ -621,8 +643,12 @@ try {
     assert.equal(scanning.fill, 'rgba(0, 0, 0, 0)');
     assert.equal(scanning.cancelBorder, '1px');
     await apple.waitForFunction(() => window.requests.some(path => path.includes('/tracks?')));
+    // A scan window's title reports live progress while the scan runs in the background.
+    await popup.waitForFunction(() => /^Scanning playlist · \d+% — Apple Music Playlist Duplicate Finder$/.test(document.title));
     await popup.getByRole('button', { name: 'Cancel scan', exact: true }).click();
     await popup.getByRole('heading', { name: 'Scan cancelled', exact: true }).waitFor();
+    // Cancelling restores the title of the results still on screen.
+    await popup.waitForFunction(() => document.title === '1 song repeats — Apple Music Playlist Duplicate Finder');
     assert.match(await popup.locator('#status-detail').textContent(), /Showing your last scan from/);
     assert.equal(await popup.locator('#duplicate-list li').count(), 1);
     assert.equal(await popup.evaluate(() => window.__badge), '1');
@@ -643,6 +669,11 @@ try {
 
     // Copy and CSV keep the cached playlist name when the player is unavailable.
     await apple.evaluate(() => { window.scenario = 'unavailable'; });
+    await popup.evaluate(() => {
+      const cached = JSON.parse(localStorage.getItem('amdf:last-scan:v1'));
+      cached.scannedAt = new Date(2020, 0, 2, 12).getTime();
+      localStorage.setItem('amdf:last-scan:v1', JSON.stringify(cached));
+    });
     await popup.goto(popupUrl);
     await popup.waitForFunction(() => document.querySelector('#status-code').textContent === 'Error code: MUSICKIT_UNAVAILABLE');
     await popup.evaluate(() => {
@@ -661,7 +692,7 @@ try {
     await popup.getByRole('button', { name: 'Download CSV (1) of all repeated songs', exact: true }).click();
     const cachedDownload = await cachedDownloadPromise;
     assert.match(cachedDownload.suggestedFilename(),
-      /^apple-music-duplicates-img-src-x-onerror-alert-1-My-playlist-\d{4}-\d{2}-\d{2}\.csv$/);
+      /^apple-music-duplicates-img-src-x-onerror-alert-1-My-playlist-2020-01-02\.csv$/);
 
     // Clearing while the player is still connecting must not let the in-flight
     // metadata response resurrect a cached-scan status.
@@ -1540,6 +1571,18 @@ try {
   assert.equal(await popup.evaluate(() => window.__createCount), 1, 'two clicks must create only one window');
   assert.deepEqual(await popup.evaluate(() => JSON.parse(localStorage.getItem('amdf:test:updatedWindow'))),
     { id: createdId, info: { focused: true } });
+  assert.equal(await popup.evaluate(() => window.__getViewsUsed || 0), 0,
+    'current Chrome uses runtime.getContexts instead of the deprecated view API');
+  // Chrome 111-115 has no runtime.getContexts; the deprecated view API remains the fallback.
+  await popup.evaluate(() => {
+    delete window.chrome.runtime.getContexts;
+    localStorage.removeItem('amdf:test:updatedWindow');
+  });
+  await popup.locator('#pop-out').click();
+  await popup.waitForFunction(() => localStorage.getItem('amdf:test:updatedWindow'));
+  assert.deepEqual(await popup.evaluate(() => JSON.parse(localStorage.getItem('amdf:test:updatedWindow'))),
+    { id: createdId, info: { focused: true } });
+  assert.ok(await popup.evaluate(() => window.__getViewsUsed > 0), 'the pre-116 fallback inspects extension views');
   // Reopening the toolbar popup is a new JS context; live windows are still found.
   await popup.goto(popupUrl);
   await popup.waitForFunction(() => !document.querySelector('#pop-out').hidden);
@@ -1921,8 +1964,30 @@ try {
   assert.equal(focusedWindow?.id, 55);
   assert.equal(focusedWindow?.info?.focused, true);
   // The handed-off scan request is single-use.
-  assert.equal(await popup.evaluate(() => localStorage.getItem('amdf:scan-request:v1')), null);
+  assert.equal(await popup.evaluate(() => localStorage.getItem('amdf:scan-request:v1:1')), null);
   console.log('PASS: scan handoff focuses an open pop-out instead of duplicating it, and the scan runs there once');
+
+  // A handoff that reaches a pop-out while it is still connecting is not dropped:
+  // once the playlist is ready, the scan the user asked for starts there.
+  await apple.evaluate(() => {
+    window.scenario = 'duplicates';
+    window.requests = [];
+    window.fixtureDelay = 1_500;
+    history.replaceState({}, '', '/us/library/playlist/p.fixture');
+  });
+  await scanWin.goto(popupUrl + '?tab=1');
+  await scanWin.waitForFunction(() => document.querySelector('#status-title').textContent === 'Connecting to Apple Music…');
+  await popup.evaluate(url => {
+    localStorage.setItem('amdf:test:windows', JSON.stringify({ 55: url }));
+  }, scanWin.url());
+  await popup.locator('#scan').click();
+  await apple.evaluate(() => { window.fixtureDelay = 25; });
+  await scanWin.waitForFunction(() => document.querySelector('#status-title').textContent === 'Scan complete');
+  // As in the first handoff, the cache write is still in flight when completion renders.
+  await scanWin.waitForFunction(() => localStorage.getItem('amdf:last-scan:v1') !== null);
+  assert.equal(await popup.evaluate(() => localStorage.getItem('amdf:scan-request:v1:1')), null,
+    'the delayed handoff is consumed once it starts');
+  console.log('PASS: scan handoff waits for a connecting pop-out and starts once it is ready');
 
   // An over-limit pop-out re-checks its tab when it regains focus, so trimming the
   // playlist in place (no navigation, no tab events) re-enables scanning.

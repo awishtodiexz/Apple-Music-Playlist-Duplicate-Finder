@@ -325,6 +325,8 @@ try {
   await until(() => scanWindow.evaluate(() => document.querySelector('#status-title').textContent === 'Scan complete'),
     'scan finishes after original popup closes and focus moves away');
   assert.equal(await scanWindow.evaluate(() => document.querySelectorAll('#duplicate-list li').length), 1);
+  // The scan window's title carries the outcome, so a background window is readable in the taskbar.
+  assert.equal(await scanWindow.evaluate(() => document.title), '1 song repeats — Apple Music Playlist Duplicate Finder');
   assert.equal(await scanWindow.evaluate(() => new URL(location.href).searchParams.has('scan')), false);
   assert.equal(await scanWindow.evaluate(() => document.querySelectorAll('#checklist-toggle, #removal-checklist, #verify-changes').length), 0);
   await apple.evaluate(() => { window.fixtureDelay = 25; window.scenario = 'distinct'; });
@@ -335,6 +337,24 @@ try {
   const audit = await scanWindow.evaluate(auditAccessibility);
   assert.deepEqual(audit.findings, []);
   await scanWindow.evaluate(() => localStorage.clear());
+  // With the scan window still open for this tab, Open in a window must focus it
+  // through the real runtime.getContexts path rather than duplicating the window.
+  // Real Chromium reports popup-type windows as TAB contexts, which the mocked
+  // suite cannot prove; only this installed-extension run can.
+  const dedupe = await open('duplicates');
+  await until(() => dedupe.evaluate(() => document.querySelector('#pop-out')?.hidden === false), 'pop-out action in toolbar popup');
+  const popoutTargets = async () => (await cdp.send('Target.getTargets')).targetInfos
+    .filter(target => target.url.includes('/popup.html?tab=')).length;
+  const windowsBefore = await popoutTargets();
+  await dedupe.evaluate(() => document.querySelector('#pop-out').click());
+  // A negative assertion needs a settle window: a duplicated window appears in
+  // the target list within a few hundred milliseconds of the click.
+  await new Promise(resolve => setTimeout(resolve, 1_500));
+  assert.equal(await popoutTargets(), windowsBefore, 'Open in a window must not duplicate the scan window');
+  for (const target of (await cdp.send('Target.getTargets')).targetInfos) {
+    if (target.url === `chrome-extension://${id}/popup.html`) await cdp.send('Target.closeTarget', { targetId: target.targetId });
+  }
+  activePopup = null;
   await scanWindow.close();
   console.log('PASS: default scan window survives toolbar-popup closure and focus loss; real extension rescan comparison');
 
