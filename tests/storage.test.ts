@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { cacheFreshness, clearCachedScan, consumeScanRequest, loadCachedScan, loadScanWindowPreference, loadThemePreference, readScanRequest, saveCachedScan, saveScanWindowPreference, saveThemePreference, writeScanRequest, type CachedScan } from '../src/storage';
+import { cacheFreshness, clearCachedScan, consumeScanRequest, loadCachedScan, loadScanWindowPreference, loadThemePreference, readScanRequest, saveCachedScan, saveScanWindowPreference, saveThemePreference, scanRequestKeyForTab, storedScanRequest, writeScanRequest, type CachedScan } from '../src/storage';
 import type { DuplicateGroup } from '../src/types';
 
 const values = new Map<string, string>();
@@ -330,19 +330,32 @@ test('catalog cache is scoped to a known storefront', () => {
 
 test('a scan request round-trips and consumes only the exact payload it was shown', () => {
   values.clear();
-  writeScanRequest(7);
-  const raw = values.get('amdf:scan-request:v1');
+  writeScanRequest(7, 'p.fixture');
+  const raw = values.get(scanRequestKeyForTab(7));
   assert.equal(typeof raw, 'string');
   const request = readScanRequest(raw as string);
   assert.equal(request?.tab, 7);
+  assert.equal(request?.playlist, 'p.fixture');
   assert.equal(typeof request?.at, 'number');
+  assert.deepEqual(storedScanRequest(7), { raw, request });
   // A newer write meanwhile must survive the stale consume.
-  values.set('amdf:scan-request:v1', JSON.stringify({ tab: 8, at: Date.now() }));
-  consumeScanRequest(raw as string);
-  assert.equal(readScanRequest(values.get('amdf:scan-request:v1') as string)?.tab, 8);
+  values.set(scanRequestKeyForTab(7), JSON.stringify({ tab: 8, at: Date.now() }));
+  consumeScanRequest(7, raw as string);
+  assert.equal(readScanRequest(values.get(scanRequestKeyForTab(7)) as string)?.tab, 8);
   // Consuming the value actually stored removes it.
-  consumeScanRequest(values.get('amdf:scan-request:v1') as string);
-  assert.equal(values.get('amdf:scan-request:v1'), undefined);
+  consumeScanRequest(7, values.get(scanRequestKeyForTab(7)) as string);
+  assert.equal(values.get(scanRequestKeyForTab(7)), undefined);
+});
+
+test('scan requests for different tabs coexist instead of overwriting each other', () => {
+  values.clear();
+  writeScanRequest(7, 'p.one');
+  writeScanRequest(8, 'pl.two');
+  assert.equal(storedScanRequest(7)?.request.playlist, 'p.one');
+  assert.equal(storedScanRequest(8)?.request.playlist, 'pl.two');
+  consumeScanRequest(7, storedScanRequest(7)?.raw as string);
+  assert.equal(storedScanRequest(7), null);
+  assert.equal(storedScanRequest(8)?.request.playlist, 'pl.two');
 });
 
 test('scan requests reject corrupt, stale, future and implausible payloads', () => {
@@ -357,10 +370,25 @@ test('scan requests reject corrupt, stale, future and implausible payloads', () 
   assert.equal(readScanRequest(JSON.stringify({ tab: '1', at: now }), now), null);
   assert.equal(readScanRequest(JSON.stringify({ tab: 1, at: 0 }), now), null);
   assert.equal(readScanRequest(JSON.stringify({ tab: 1, at: 'now' }), now), null);
+  assert.equal(readScanRequest(JSON.stringify({ tab: 1, at: now, playlist: 'not a playlist' }), now), null);
   // Older than the handoff window or ahead of the clock: not a live request.
-  assert.equal(readScanRequest(JSON.stringify({ tab: 1, at: now - 15_001 }), now), null);
-  assert.equal(readScanRequest(JSON.stringify({ tab: 1, at: now - 15_000 }), now)?.tab, 1);
+  assert.equal(readScanRequest(JSON.stringify({ tab: 1, at: now - 45_001 }), now), null);
+  assert.equal(readScanRequest(JSON.stringify({ tab: 1, at: now - 45_000 }), now)?.tab, 1);
   assert.equal(readScanRequest(JSON.stringify({ tab: 1, at: now + 1 }), now), null);
+});
+
+test('stored scan requests hide missing or corrupt entries and tolerate storage failure', () => {
+  values.clear();
+  assert.equal(storedScanRequest(7), null);
+  values.set(scanRequestKeyForTab(7), '{not json');
+  assert.equal(storedScanRequest(7), null);
+  const real = globalThis.localStorage;
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    get: () => { throw new Error('storage blocked'); },
+  });
+  try { assert.equal(storedScanRequest(7), null); }
+  finally { Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: real }); }
 });
 
 test('scan request writes with unavailable storage are a safe no-op', t => {
@@ -368,8 +396,8 @@ test('scan request writes with unavailable storage are a safe no-op', t => {
   t.mock.method(localStorage, 'setItem', () => { throw new DOMException('Storage quota exceeded', 'QuotaExceededError'); });
   values.clear();
   writeScanRequest(7);
-  assert.equal(values.get('amdf:scan-request:v1'), undefined);
+  assert.equal(values.get(scanRequestKeyForTab(7)), undefined);
   t.mock.restoreAll();
-  setItem('amdf:scan-request:v1', 'kept');
-  assert.equal(values.get('amdf:scan-request:v1'), 'kept');
+  setItem(scanRequestKeyForTab(7), 'kept');
+  assert.equal(values.get(scanRequestKeyForTab(7)), 'kept');
 });

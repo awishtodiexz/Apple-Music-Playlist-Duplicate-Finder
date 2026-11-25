@@ -252,6 +252,15 @@ test('CSV filenames are stable and filesystem-safe', () => {
     'apple-music-duplicates-playlist-2026-11-08.csv');
 });
 
+test('CSV filenames preserve Unicode playlist names without splitting symbols', () => {
+  assert.equal(csvFilename('日本語 🎧 playlist', new Date('2026-11-08T00:00:00Z')),
+    'apple-music-duplicates-日本語-🎧-playlist-2026-11-08.csv');
+});
+
+test('CSV filenames use the scan date in the user’s local calendar', () => {
+  assert.match(csvFilename('Local date', new Date(2026, 10, 8, 23, 30)), /-2026-11-08\.csv$/);
+});
+
 test('long playlist names are truncated before the date suffix', () => {
   assert.equal(csvFilename('A'.repeat(100), new Date('2026-11-08T00:00:00Z')),
     `apple-music-duplicates-${'A'.repeat(60)}-2026-11-08.csv`);

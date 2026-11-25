@@ -6,7 +6,7 @@
 
 Find the songs that show up more than once in your Apple Music playlists.
 
-[**Download v1.6.6**](https://github.com/awishtodiexz/Apple-Music-Playlist-Duplicate-Finder/releases/download/v1.6.6/apple-music-playlist-duplicate-finder-v1.6.6.zip) · [Install](#install) · [Privacy](#privacy)
+[**Download v1.7**](https://github.com/awishtodiexz/Apple-Music-Playlist-Duplicate-Finder/releases/download/v1.7/apple-music-playlist-duplicate-finder-v1.7.zip) · [Install](#install) · [Privacy](#privacy)
 
 [![CI](https://github.com/awishtodiexz/Apple-Music-Playlist-Duplicate-Finder/actions/workflows/ci.yml/badge.svg)](https://github.com/awishtodiexz/Apple-Music-Playlist-Duplicate-Finder/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -35,22 +35,22 @@ Find the songs that show up more than once in your Apple Music playlists.
 
 Works in Chrome and Edge 111 or newer. It isn't on the Chrome Web Store, so you load it manually:
 
-1. [Download the ZIP](https://github.com/awishtodiexz/Apple-Music-Playlist-Duplicate-Finder/releases/download/v1.6.6/apple-music-playlist-duplicate-finder-v1.6.6.zip) and extract it to a folder you'll keep.
+1. [Download the ZIP](https://github.com/awishtodiexz/Apple-Music-Playlist-Duplicate-Finder/releases/download/v1.7/apple-music-playlist-duplicate-finder-v1.7.zip) and extract it to a folder you'll keep.
 2. Go to `chrome://extensions` (or `edge://extensions`) and turn on **Developer mode**.
 3. Click **Load unpacked** and pick the extracted folder.
 
 To update, extract the new ZIP over the same folder and click **Reload** on the extensions page.
 
 > [!NOTE]
-> Download `apple-music-playlist-duplicate-finder-v1.6.6.zip` from the release, not GitHub's *Source code* archive, which needs to be built first. Each release also has a `.zip.sha256` checksum if you want to [verify it](docs/DEVELOPMENT.md#verify-a-download).
+> Download `apple-music-playlist-duplicate-finder-v1.7.zip` from the release, not GitHub's *Source code* archive, which needs to be built first. Each release also has a `.zip.sha256` checksum if you want to [verify it](docs/DEVELOPMENT.md#verify-a-download).
 
 ## Usage
 
 1. Open a playlist on [music.apple.com](https://music.apple.com) while signed in.
 2. Click the extension icon and press **Scan for duplicates**.
-3. The scan starts in a separate window, so you can click back into Apple Music while it runs. Keep that window open until it finishes. To scan in the toolbar popup instead, open **Settings** and turn off **Keep scans open in a separate window**.
+3. The scan starts in a separate window, so you can click back into Apple Music while it runs. Keep that window open until it finishes; its title shows the scan's progress and result, so you can see it finish from the taskbar. To scan in the toolbar popup instead, open **Settings** and turn off **Scan in a separate window**.
 
-The headline shows how many songs repeat. Each song row shows how many copies it has; expand it to see every playlist position where it appears. Search stays visible, while **Filter, sort & export** contains the minimum-copy filter, sort order, Copy, and CSV controls.
+The headline shows how many songs repeat. Each song row shows how many copies it has; expand it to see every playlist position where it appears. Search stays visible, while **Filter, sort & export** contains the minimum-copy filter, sort order, Copy, and CSV controls. Press `/` or Ctrl+F (Cmd+F on a Mac) to jump to search.
 
 The extension only shows results. If you want to remove copies, do it yourself in Apple Music, then press **Scan again**. A **Since your last scan** note above the list says how the extra-copy count changed and which songs no longer repeat. If either scan contains songs without usable IDs, the note says changes cannot be confirmed.
 

@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+## [1.7](https://github.com/awishtodiexz/Apple-Music-Playlist-Duplicate-Finder/releases/tag/v1.7) (2026-11-25)
+
+### Added
+
+- The scan window's title shows live progress while scanning ("Scanning playlist · 42%") and the outcome when finished, so a background scan is readable in the taskbar and window switcher.
+- Ctrl/Cmd+F focuses the results search; the browser's find bar cannot search a virtualized list.
+
+### Fixed
+
+- Scan window detection now matches real Chrome: extension pages in popup windows are reported as tab contexts, so the previous filter never matched and "Open in a window" would have opened a duplicate window instead of focusing the live one.
+- A scan handed to a pop-out that is still connecting is no longer consumed and dropped; the validated request starts once the window is ready.
+- Scan handoffs are keyed per tab, so handing off scans for two different tabs no longer overwrites one with the other.
+- CSV filenames preserve Unicode letters, accents, combining marks and emoji, truncate by code point instead of splitting surrogate pairs, and use the scan's date in your local calendar rather than the export date in UTC.
+- Result rows use valid phrasing content inside their disclosures, and dead playlist styles that never rendered are removed.
+
+### Changed
+
+- Elapsed scan time reads as minutes and seconds, and scan timestamps use natural locale formatting ("2:31 PM", not "02:31 PM").
+- The scan-window setting reads "Scan in a separate window", and narrow pop-out headers wrap naturally.
+
 ## [1.6.6](https://github.com/awishtodiexz/Apple-Music-Playlist-Duplicate-Finder/releases/tag/v1.6.6) (2026-11-25)
 
 ### Fixed
