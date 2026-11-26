@@ -124,7 +124,10 @@ export function positionParts(group: Pick<DuplicateGroup, 'positions'>, limit = 
   return { first: joined[0]!, later: joined.length > 1 ? ` ${joined.slice(1).join(' ')}` : '' };
 }
 
-const groupKey = (group: DuplicateGroup): string => `${group.name.trim().toLowerCase()}\u0000${group.artist.trim().toLowerCase()}`;
+const groupKey = (group: DuplicateGroup): string => {
+  const name = group.name.trim().toLowerCase();
+  return `${name.length}:${name}:${group.artist.trim().toLowerCase()}`;
+};
 
 /**
  * Identities of rows whose name and artist match another row. Groups are keyed by Apple Music
@@ -267,10 +270,25 @@ export function toCsv(groups: readonly DuplicateGroup[]): string {
   return rows.map(row => row.map(csvField).join(',')).join('\r\n') + '\r\n';
 }
 
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+const utf8Encoder = new TextEncoder();
+
 export function csvFilename(playlistName: string, scannedAt: Date = new Date()): string {
-  const unicodeSafe = playlistName.replace(/[^\p{L}\p{N}\p{M}\p{Extended_Pictographic}\u200d._-]+/gu, '-').replace(/^-+|-+$/g, '');
-  const base = [...unicodeSafe].slice(0, 60).join('').replace(/-+$/g, '') || 'playlist';
   const pad = (part: number): string => String(part).padStart(2, '0');
   const date = `${scannedAt.getFullYear()}-${pad(scannedAt.getMonth() + 1)}-${pad(scannedAt.getDate())}`;
-  return `apple-music-duplicates-${base}-${date}.csv`;
+  const baseByteLimit = 255 - utf8Encoder.encode(`apple-music-duplicates--${date}.csv`).length;
+  const unicodeSafe = playlistName.replace(/[^\p{L}\p{N}\p{M}\p{Extended_Pictographic}\p{Regional_Indicator}\u200d\ufe0f._-]+/gu, '-').replace(/^-+|-+$/g, '');
+  let base = '';
+  let baseBytes = 0;
+  let clusters = 0;
+  for (const { segment } of graphemeSegmenter.segment(unicodeSafe)) {
+    if (clusters >= 60) break;
+    const bytes = utf8Encoder.encode(segment).length;
+    if (baseBytes + bytes > baseByteLimit) break;
+    base += segment;
+    baseBytes += bytes;
+    clusters += 1;
+  }
+  const truncated = base.replace(/-+$/g, '') || 'playlist';
+  return `apple-music-duplicates-${truncated}-${date}.csv`;
 }

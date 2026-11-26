@@ -145,6 +145,14 @@ test('rows that share a name and artist are flagged, and only those', () => {
   assert.equal(appleMusicId({ identity: 'library:i.ABC' }), 'i.ABC');
 });
 
+test('lookalike keys cannot collide through NUL separators', () => {
+  const first = { ...group('A\u0000B', 'C', [1, 2]), identity: 'catalog:first' };
+  const second = { ...group('A', 'B\u0000C', [3, 4]), identity: 'catalog:second' };
+  assert.equal(lookalikeIdentities([first, second]).size, 0);
+  const matching = { ...group('A\u0000B', 'C', [5, 6]), identity: 'catalog:matching' };
+  assert.deepEqual([...lookalikeIdentities([first, second, matching])].sort(), ['catalog:first', 'catalog:matching']);
+});
+
 test('grouping 25,000 same-name songs is linear and keeps every identity', () => {
   const shared = Array.from({ length: 25_000 }, (_, index) => ({
     ...group('Same Song', 'Same Artist', [index + 1]),
@@ -264,4 +272,25 @@ test('CSV filenames use the scan date in the user’s local calendar', () => {
 test('long playlist names are truncated before the date suffix', () => {
   assert.equal(csvFilename('A'.repeat(100), new Date('2026-11-08T00:00:00Z')),
     `apple-music-duplicates-${'A'.repeat(60)}-2026-11-08.csv`);
+});
+
+test('CSV filenames truncate at grapheme boundaries and preserve emoji sequences', () => {
+  const date = new Date('2026-11-08T00:00:00Z');
+  assert.equal(csvFilename(`${'A'.repeat(59)}e\u0301`, date),
+    `apple-music-duplicates-${'A'.repeat(59)}e\u0301-2026-11-08.csv`);
+  assert.equal(csvFilename('Flag 🇺🇸 playlist', date),
+    'apple-music-duplicates-Flag-🇺🇸-playlist-2026-11-08.csv');
+  assert.equal(csvFilename('Heart ❤️ playlist', date),
+    'apple-music-duplicates-Heart-❤️-playlist-2026-11-08.csv');
+  const family = '👨‍👩‍👧‍👦';
+  assert.equal(csvFilename(`${'A'.repeat(59)}${family}B`, date),
+    `apple-music-duplicates-${'A'.repeat(59)}${family}-2026-11-08.csv`);
+});
+
+test('CSV filenames cap UTF-8 bytes within the 255-byte filename limit', () => {
+  const filename = csvFilename('🎧'.repeat(60), new Date('2026-11-08T00:00:00Z'));
+  assert.ok(Buffer.byteLength(filename, 'utf8') <= 255, `${Buffer.byteLength(filename, 'utf8')} bytes`);
+  assert.equal(filename, `apple-music-duplicates-${'🎧'.repeat(54)}-2026-11-08.csv`);
+  const farFuture = csvFilename('e' + '\u0301'.repeat(108), new Date(8_640_000_000_000_000));
+  assert.ok(Buffer.byteLength(farFuture, 'utf8') <= 255, `${Buffer.byteLength(farFuture, 'utf8')} bytes`);
 });

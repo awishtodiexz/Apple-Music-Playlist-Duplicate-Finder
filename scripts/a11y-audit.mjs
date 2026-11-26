@@ -72,7 +72,7 @@ export function auditAccessibility() {
   }
 
   const controls = [...document.querySelectorAll(
-    'button, a[href], input:not([type="hidden"]), select, textarea, [role="button"], [tabindex]:not([tabindex="-1"])',
+    'button, a[href], input:not([type="hidden"]), select, textarea, summary, [role="button"], [tabindex]:not([tabindex="-1"])',
   )].filter(isVisible);
   for (const control of controls) {
     if (!accessibleName(control)) findings.push(`${describe(control)} has no accessible name`);
@@ -162,7 +162,7 @@ export function auditAccessibility() {
     return background;
   };
   const contrastTargets = [...document.querySelectorAll(
-    'h1, h2, p, label, button, select, input, footer, .song, .artist, .counts, .positions, #playlist-name',
+    'h1, h2, p, label, button, select, input, summary, footer, .song, .artist, .counts, .positions, #playlist-name',
   )].filter(isVisible);
   let checkedContrast = 0;
   for (const element of contrastTargets) {

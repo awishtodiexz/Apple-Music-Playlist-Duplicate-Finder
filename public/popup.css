@@ -219,7 +219,7 @@ h1 span { display: block; }
 #results-options[open] { padding-bottom: 6px; }
 #results-options .toolbar-row + .toolbar-row { margin-top: 8px; }
 #results-options label { color: var(--muted); font-size: 12px; }
-#duplicate-list > li { display: block; padding: 0; background: var(--surface); }
+#duplicate-list > li { display: block; contain: layout style; padding: 0; background: var(--surface); }
 .song-details > summary { display: flex; align-items: center; gap: 10px; cursor: pointer; padding: 14px 12px; list-style: none; }
 .song-details > summary::-webkit-details-marker { display: none; }
 .song-details > summary::after { content: "+" / ""; color: var(--muted); font-size: 16px; }

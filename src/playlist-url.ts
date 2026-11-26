@@ -1,7 +1,7 @@
 import { ScanError } from './errors';
 import type { PlaylistRef } from './types';
 
-const playlistId = /^(?:p\.[A-Za-z0-9-]{1,126}|pl\.[A-Za-z0-9-]{1,126})$/;
+const playlistId = /^(?:p\.[A-Za-z0-9_-]{1,126}|pl\.[A-Za-z0-9_-]{1,126})$/;
 const routeMarker = /^playlists?$/i;
 
 /**

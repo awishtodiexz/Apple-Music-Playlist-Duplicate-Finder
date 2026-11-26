@@ -120,6 +120,27 @@ test('a slow start does not abort a scan that finishes within its deadline', asy
   assert.equal(result.countVerified, true);
 });
 
+test('a forward wall-clock jump does not consume the scan deadline', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1_000 });
+  let finish!: () => void;
+  let entered!: () => void;
+  const waiting = new Promise<void>(resolve => { entered = resolve; });
+  const source: PlaylistSource = {
+    metadata: async () => ({ ...info, total: 1 }),
+    page: async () => {
+      entered();
+      return new Promise(resolve => {
+        finish = () => resolve({ tracks: entries(1), total: 1, nextOffset: null });
+      });
+    },
+  };
+  const pending = readPlaylist(source, undefined, { deadlineMs: 60_000 });
+  await waiting;
+  t.mock.timers.setTime(120_000);
+  finish();
+  assert.equal((await pending).tracks.length, 1);
+});
+
 test('a single retry does not abort a scan that can still finish', async () => {
   const total = 5_000;
   const all = entries(total);

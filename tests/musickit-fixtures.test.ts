@@ -50,6 +50,12 @@ function v3(body: unknown, path: string) {
   return { api: { music: async (requested: string) => { assert.equal(requested, path); return body; } } };
 }
 
+function middlewareEnvelope(body: unknown) {
+  const appleBody = { ...(body as Record<string, unknown>) };
+  delete appleBody.response;
+  return { request: {}, response: { status: 200 }, data: appleBody };
+}
+
 function expectPage(reply: Reply, nextOffset: number | null): TrackPage {
   assert.equal(reply.ok, true, JSON.stringify(reply));
   if (!reply.ok) throw new Error('unreachable');
@@ -72,6 +78,28 @@ test('v3 metadata fixture resolves the sanitized playlist info', async () => {
 test('v3 tracks fixture resolves three ordered tracks and a next offset', async () => {
   const reply = await readVia(tracksRequest, () => assert.fail('legacy get should not be used'),
     v3(fixture('v3-tracks'), tracksPath));
+  const page = expectPage(reply, 3);
+  assert.deepEqual(page.tracks.map(track => track.catalogId), ['1001', '1002', '1003']);
+});
+
+test('canonical v3 middleware metadata envelope nests the Apple body in data', async () => {
+  const envelope = middlewareEnvelope(fixture('v3-metadata'));
+  assert.deepEqual(Object.keys(envelope).sort(), ['data', 'request', 'response']);
+  const reply = await readVia(metadataRequest, () => assert.fail('legacy get should not be used'),
+    v3(envelope, metadataPath));
+  assert.deepEqual(reply, {
+    ok: true,
+    data: { name: 'Fixture playlist', total: 3, modified: '2026-01-01T00:00:00Z' },
+  });
+});
+
+test('canonical v3 middleware tracks envelope nests data, total and next in data', async () => {
+  const envelope = middlewareEnvelope(fixture('v3-tracks'));
+  assert.equal(Array.isArray(envelope.data.data), true);
+  assert.equal((envelope.data.meta as { total?: unknown }).total, 3);
+  assert.equal(typeof envelope.data.next, 'string');
+  const reply = await readVia(tracksRequest, () => assert.fail('legacy get should not be used'),
+    v3(envelope, tracksPath));
   const page = expectPage(reply, 3);
   assert.deepEqual(page.tracks.map(track => track.catalogId), ['1001', '1002', '1003']);
 });
