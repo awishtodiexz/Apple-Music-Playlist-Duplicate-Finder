@@ -367,14 +367,14 @@ try {
     .find(target => target.url.includes('/popup.html?tab=')), 'cross-origin recovery pop-out');
   const recoveryWindow = await attach(recoveryTarget.targetId);
   await until(async () => ['Ready to scan', 'Showing last scan'].includes(
-    await recoveryWindow.evaluate(() => document.querySelector('#status-title').textContent)), 'recovery pop-out connection');
+    await recoveryWindow.evaluate(() => document.querySelector('#status-title')?.textContent)), 'recovery pop-out connection');
   for (const target of (await cdp.send('Target.getTargets')).targetInfos) {
     if (target.url === `chrome-extension://${id}/popup.html`) await cdp.send('Target.closeTarget', { targetId: target.targetId });
   }
   activePopup = null;
   await apple.goto('https://blocked.test/');
   await until(async () => ['Open a playlist', 'Could not connect'].includes(
-    await recoveryWindow.evaluate(() => document.querySelector('#status-title').textContent)), 'pop-out notices cross-origin navigation');
+    await recoveryWindow.evaluate(() => document.querySelector('#status-title')?.textContent)), 'pop-out notices cross-origin navigation');
   await apple.goto('https://music.apple.com/us/library/playlist/p.fixture');
   const grantPopup = await open('duplicates');
   await grantPopup.evaluate(() => {
