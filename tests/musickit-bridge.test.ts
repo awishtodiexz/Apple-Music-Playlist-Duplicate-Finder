@@ -241,6 +241,20 @@ test('catalog routes use the same MusicKit integration, never a library-name sea
   assert.equal((await musicKitBridge({ action: 'tracks', playlist: catalog, offset: 0 })).ok, true);
   assert.equal(calls[0], '/v1/catalog/gb/playlists/pl.abc/tracks?limit=100&offset=0');
 });
+
+test('playlist IDs with underscores pass request validation', async () => {
+  const libraryPlaylist = { id: 'p.abc_123', kind: 'library' as const, storefront: 'us' };
+  const librarySetup = setup(() => ({ data: [] }));
+  librarySetup.win.location.pathname = '/us/library/playlist/p.abc_123';
+  assert.equal((await musicKitBridge({ action: 'tracks', playlist: libraryPlaylist, offset: 0 })).ok, true);
+  assert.equal(librarySetup.calls[0], '/v1/me/library/playlists/p.abc_123/tracks?limit=100&offset=0&include=catalog');
+
+  const catalogPlaylist = { id: 'pl.u-ABC_1', kind: 'catalog' as const, storefront: 'us' };
+  const catalogSetup = setup(() => ({ data: [] }));
+  catalogSetup.win.location.pathname = '/us/playlist/mix/pl.u-ABC_1';
+  assert.equal((await musicKitBridge({ action: 'tracks', playlist: catalogPlaylist, offset: 0 })).ok, true);
+  assert.equal(catalogSetup.calls[0], '/v1/catalog/us/playlists/pl.u-ABC_1/tracks?limit=100&offset=0');
+});
 test('an invalid bridge action is rejected before any API call', async () => {
   let calls = 0;
   const { win } = setup(() => { calls++; return { data: [] }; });
@@ -551,6 +565,31 @@ test('conflicting body and wrapper pagination evidence is rejected', async () =>
     setup(() => response);
     assert.deepEqual(await musicKitBridge(request), { ok: false, code: 'INCOMPLETE' });
   }
+});
+
+test('explicit null totals conflict with wrapper totals but absent totals do not', async () => {
+  for (const response of [
+    { data: { data: [song()], meta: { total: null } }, meta: { total: 2 } },
+    { data: { data: [song()], meta: { total: 2 } }, meta: { total: null } },
+  ]) {
+    setup(() => response);
+    assert.deepEqual(await musicKitBridge(request), { ok: false, code: 'INCOMPLETE' });
+  }
+
+  for (const response of [
+    { data: { data: [song()] }, meta: { total: 2 } },
+    { data: { data: [song()], meta: {} }, meta: { total: 2 } },
+  ]) {
+    setup(() => response);
+    assert.equal((await page()).total, 2);
+  }
+
+  // Prototype-inherited meta.total values are ignored consistently for both value and conflict checks.
+  const inheritedMeta = Object.create({ total: 2 });
+  setup(() => ({ data: { data: [song()], meta: { total: null } }, meta: inheritedMeta }));
+  assert.equal((await page()).total, null);
+  setup(() => ({ data: { data: [song()], meta: inheritedMeta } }));
+  assert.equal((await page()).total, null);
 });
 
 test('raw response body consumption remains cancellable and aborts the fetch signal', async () => {

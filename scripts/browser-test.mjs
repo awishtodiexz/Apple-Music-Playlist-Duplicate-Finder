@@ -1020,7 +1020,7 @@ try {
     await apple.evaluate(() => { window.fixtureDelay = 700; });
     await popup.locator('#scan').click();
     // Cancel after a track request has started, not just the initial metadata.
-    await apple.waitForFunction(() => window.requests.some(path => path.includes('/tracks?')));
+    await apple.waitForFunction(() => window.requests.some(path => path.includes('/tracks?')), null, { polling: 50 });
     const startedCancel = Date.now();
     await popup.getByRole('button', { name: 'Cancel scan', exact: true }).click();
     await popup.getByRole('heading', { name: 'Scan cancelled', exact: true }).waitFor();
@@ -1123,7 +1123,9 @@ try {
     await openOptions();
     await popup.locator('#copy-results').click();
     await popup.waitForFunction(() => document.querySelector('#results-feedback').textContent === 'Copied 3 matching songs.');
-    assert.equal((await popup.evaluate(() => window.__copiedResults)).trim().split('\n').filter(line => /^Numb — /.test(line)).length, 3);
+    const filteredCopy = await popup.evaluate(() => window.__copiedResults);
+    assert.equal(filteredCopy.trim().split('\n').filter(line => /^Numb — /.test(line)).length, 3);
+    assert.match(filteredCopy, /2,400 songs checked · 1,200 repeated songs · 1,200 extra copies\nFiltered to 3 of 1,200 repeated songs\./);
     // Feedback about this filtered list must not outlive it, or "Copied 3 songs" would sit above an empty or full list.
     await popup.locator('#results-search').fill('no such song');
     assert.equal(await popup.locator('#results-feedback').textContent(), '');
@@ -2011,6 +2013,314 @@ try {
     'an unchanged playlist must not be refetched on focus');
   await scanWin.close();
   console.log('PASS: a pop-out re-checks its tab on focus, recovering from an in-place trim without refetching when unchanged');
+
+  const openFreshPinned = async ({ scenario = 'duplicates', delay = 25, path = '/us/library/playlist/p.fixture', query = '?tab=1' } = {}) => {
+    await apple.evaluate(({ scenario, delay, path }) => {
+      window.scenario = scenario;
+      window.requests = [];
+      window.fixtureDelay = delay;
+      history.replaceState({}, '', path);
+    }, { scenario, delay, path });
+    const page = await spawnPopupPage();
+    await page.goto(popupUrl + query);
+    await page.waitForFunction(() => {
+      const button = document.querySelector('#scan');
+      return button.hidden || !button.disabled;
+    });
+    return page;
+  };
+  const waitScanComplete = page => page.waitForFunction(() => document.querySelector('#status-title').textContent === 'Scan complete');
+  const clickScanAndComplete = async page => {
+    await page.locator('#scan').click();
+    await waitScanComplete(page);
+    await page.waitForFunction(() => !document.querySelector('#scan').disabled);
+  };
+
+  // Catalog playlist ids may contain underscores.
+  await popup.evaluate(() => localStorage.clear());
+  const underscoreWin = await openFreshPinned({ path: '/us/playlist/fixture/pl.u-ABC_1' });
+  await clickScanAndComplete(underscoreWin);
+  assert.ok(await apple.evaluate(() => window.requests.some(request =>
+    request === '/v1/catalog/us/playlists/pl.u-ABC_1' || request.startsWith('/v1/catalog/us/playlists/pl.u-ABC_1/'))),
+    'the underscore playlist id must reach the catalog API unchanged');
+  await underscoreWin.close();
+  console.log('PASS: catalog playlist ids with underscores scan end to end');
+
+  // Theme changes are live across open popup windows through the storage event.
+  const themeA = await spawnPopupPage();
+  await themeA.goto(popupUrl);
+  await themeA.waitForFunction(() => !document.querySelector('#scan').disabled);
+  const themeB = await spawnPopupPage();
+  await themeB.goto(popupUrl);
+  await themeB.waitForFunction(() => !document.querySelector('#scan').disabled);
+  await themeA.locator('#theme-toggle').click();
+  await themeB.waitForFunction(() => document.documentElement.dataset.theme === 'light');
+  await themeA.locator('#theme-toggle').click();
+  await themeB.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
+  assert.equal(await themeA.evaluate(() => document.documentElement.dataset.theme), 'dark');
+  await themeA.evaluate(() => { document.querySelector('#settings').open = true; });
+  await themeA.locator('#scan-window').click();
+  await themeB.waitForFunction(() => document.querySelector('#scan-window').checked === false);
+  await themeA.close();
+  await themeB.close();
+  console.log('PASS: theme changes synchronize live across open windows');
+
+  // A pop-out in a retryable scan-failure state is a valid handoff target.
+  await popup.evaluate(() => localStorage.clear());
+  const retryWin = await openFreshPinned();
+  await apple.evaluate(() => { window.scenario = 'malformed'; window.requests = []; });
+  await retryWin.locator('#scan').click();
+  await retryWin.waitForFunction(() => document.querySelector('#status-title').textContent === 'Scan failed');
+  await apple.evaluate(() => { window.scenario = 'duplicates'; window.requests = []; });
+  await popup.evaluate(url => {
+    localStorage.setItem('amdf:test:windows', JSON.stringify({ 55: url }));
+    localStorage.removeItem('amdf:scan-window:v1');
+  }, retryWin.url());
+  await popup.goto(popupUrl);
+  await popup.waitForFunction(() => !document.querySelector('#scan').disabled);
+  await popup.locator('#scan').click();
+  await waitScanComplete(retryWin);
+  assert.equal(await popup.evaluate(() => localStorage.getItem('amdf:scan-request:v1:1')), null);
+  await retryWin.close();
+  console.log('PASS: scan handoff starts from a retryable scan-failure state');
+
+  // A mismatched request must survive the old playlist's scan and start after reconnecting.
+  const movingWin = await openFreshPinned({ delay: 25 });
+  await apple.evaluate(() => { window.fixtureDelay = 2_000; });
+  await movingWin.locator('#scan').click();
+  await movingWin.waitForFunction(() => document.querySelector('#cancel').hidden === false);
+  await apple.waitForFunction(() => window.requests.some(path => path.includes('/tracks?')), null, { polling: 50 });
+  await apple.evaluate(() => {
+    window.fixtureDelay = 25;
+    window.requests = [];
+    history.replaceState({}, '', '/us/library/playlist/p.other');
+  });
+  await popup.evaluate(url => {
+    localStorage.setItem('amdf:test:windows', JSON.stringify({ 55: url }));
+  }, movingWin.url());
+  await popup.goto(popupUrl);
+  await popup.waitForFunction(() => !document.querySelector('#scan').disabled);
+  await popup.locator('#scan').click();
+  await popup.waitForFunction(() => localStorage.getItem('amdf:scan-request:v1:1') !== null);
+  await movingWin.waitForFunction(() => document.querySelector('#status-title').textContent === 'Scan complete', null, { timeout: 15_000 });
+  assert.equal(await popup.evaluate(() => localStorage.getItem('amdf:scan-request:v1:1')), null);
+  assert.ok(await apple.evaluate(() => window.requests.some(request => request.startsWith('/v1/me/library/playlists/p.other/'))),
+    'the surviving request must scan the new playlist after reconnecting');
+  await movingWin.close();
+  console.log('PASS: scan handoff survives an active scan of a different playlist');
+
+  // A storefront in a scan handoff must match the connected catalog playlist.
+  const mismatchStartup = await openFreshPinned({
+    path: '/us/playlist/fixture/pl.fixture',
+    query: '?tab=1&scan=pl.fixture&storefront=gb',
+  });
+  await mismatchStartup.waitForTimeout(300);
+  assert.equal(await mismatchStartup.locator('#status-title').textContent(), 'Ready to scan');
+  assert.equal(await apple.evaluate(() => window.requests.filter(request => request.includes('/tracks')).length), 0,
+    'a mismatched startup storefront must not scan');
+  await mismatchStartup.close();
+  const mismatchWin = await openFreshPinned({ path: '/us/playlist/fixture/pl.fixture' });
+  const catalogCallsBefore = await apple.evaluate(() => window.requests.filter(request => request.includes('/tracks')).length);
+  await popup.evaluate(() => {
+    localStorage.setItem('amdf:scan-request:v1:1', JSON.stringify({ tab: 1, at: Date.now(), playlist: 'pl.fixture', storefront: 'gb' }));
+  });
+  await mismatchWin.waitForTimeout(700);
+  assert.equal(await mismatchWin.locator('#status-title').textContent(), 'Ready to scan');
+  assert.equal(await apple.evaluate(() => window.requests.filter(request => request.includes('/tracks')).length), catalogCallsBefore,
+    'a mismatched stored storefront must not scan');
+  await mismatchWin.close();
+  console.log('PASS: storefront mismatches reject startup and storage scan handoffs');
+
+  // A rescan opens the scan disclosure while it is in flight and announces the comparison.
+  await popup.evaluate(() => localStorage.clear());
+  const detailWin = await openFreshPinned();
+  await clickScanAndComplete(detailWin);
+  assert.equal(await detailWin.locator('#scan-details').evaluate(details => details.open), false,
+    'completed results collapse the scan disclosure');
+  await apple.evaluate(() => { window.scenario = 'partial'; window.requests = []; window.fixtureDelay = 600; });
+  await recordStatus(detailWin);
+  await detailWin.locator('#scan').click();
+  await detailWin.waitForFunction(() => document.querySelector('#status-detail').textContent.includes('Previous results stay visible'));
+  assert.equal(await detailWin.locator('#scan-details').evaluate(details => details.open), true,
+    'a rescan opens scan details so its warning is visible');
+  assert.equal(await detailWin.locator('#status-detail').isVisible(), true);
+  await apple.evaluate(() => { window.fixtureDelay = 25; });
+  await waitScanComplete(detailWin);
+  const comparisonAnnouncements = await detailWin.evaluate(() => window.__announced);
+  assert.ok(comparisonAnnouncements.some(text => text.includes('Since your last scan.') && /removed|fewer extra copy/.test(text)),
+    `comparison announcement missing: ${comparisonAnnouncements.join(' | ')}`);
+  await detailWin.close();
+  console.log('PASS: rescan opens scan details and announces the comparison to screen readers');
+
+  // Clearing a cache in another window while this one connects must remove the restored copy.
+  await popup.evaluate(() => localStorage.clear());
+  const cacheWin = await openFreshPinned();
+  await clickScanAndComplete(cacheWin);
+  await apple.evaluate(() => { window.fixtureDelay = 2_000; });
+  await cacheWin.goto(popupUrl + '?tab=1');
+  await cacheWin.waitForFunction(() => document.querySelector('#status-title').textContent === 'Showing last scan');
+  await popup.evaluate(() => localStorage.removeItem('amdf:last-scan:v1'));
+  await cacheWin.waitForFunction(() => document.querySelector('#status-title').textContent === 'Ready to scan', null, { timeout: 6_000 });
+  assert.equal(await cacheWin.locator('#duplicate-list li').count(), 0);
+  await cacheWin.close();
+  console.log('PASS: a cache cleared in another window during connect is not shown');
+
+  // A window that was already open uses another window's stored scan as its rescan baseline.
+  await popup.evaluate(() => localStorage.clear());
+  const baselineA = await openFreshPinned();
+  const baselineB = await openFreshPinned();
+  await clickScanAndComplete(baselineA);
+  await apple.evaluate(() => { window.scenario = 'partial'; window.requests = []; });
+  await clickScanAndComplete(baselineB);
+  assert.equal(await baselineB.locator('#scan-comparison').isVisible(), true,
+    'the second window must compare against the first window\'s stored scan');
+  assert.match(await baselineB.locator('#scan-comparison').textContent(), /removed|fewer extra copy/);
+  await baselineA.close();
+  await baselineB.close();
+  console.log('PASS: rescan comparison uses a baseline stored by another window');
+
+  // Uncached results survive a same-playlist reconnect after an over-limit scan is fixed.
+  await popup.evaluate(() => localStorage.clear());
+  const uncachedWin = await openFreshPinned();
+  await uncachedWin.evaluate(() => {
+    const original = Storage.prototype.setItem;
+    window.__restoreStorageSetItem = () => { Storage.prototype.setItem = original; };
+    Storage.prototype.setItem = function setItem(key, value) {
+      if (key === 'amdf:last-scan:v1') throw new DOMException('full', 'QuotaExceededError');
+      return original.call(this, key, value);
+    };
+  });
+  await clickScanAndComplete(uncachedWin);
+  await uncachedWin.evaluate(() => window.__restoreStorageSetItem());
+  assert.equal(await uncachedWin.locator('#results-feedback').textContent(), 'These results are too large to keep after closing. Use Copy all or CSV to save them.');
+  await apple.evaluate(() => { window.scenario = 'huge'; window.requests = []; });
+  await uncachedWin.locator('#scan').click();
+  await uncachedWin.waitForFunction(() => document.querySelector('#status-code').textContent === 'Error code: LIMIT');
+  assert.equal(await uncachedWin.locator('#duplicate-list li').count(), 1,
+    'the failed limit scan must not remove the previous results');
+  await apple.evaluate(() => { window.scenario = 'duplicates'; window.requests = []; });
+  await uncachedWin.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await uncachedWin.waitForFunction(() => document.querySelector('#status-title').textContent === 'Showing last scan');
+  assert.equal(await uncachedWin.locator('#duplicate-list li').count(), 1,
+    'same-playlist focus recovery must restore uncached results');
+  assert.equal(await uncachedWin.locator('#scan').isVisible(), true);
+  await uncachedWin.close();
+  console.log('PASS: uncached results survive same-playlist focus recovery after a limit');
+
+  // Closing the Apple Music tab keeps the completed snapshot and its actions usable.
+  await popup.evaluate(() => localStorage.clear());
+  const closedWin = await openFreshPinned();
+  await clickScanAndComplete(closedWin);
+  await closedWin.evaluate(() => {
+    chrome.tabs.get = () => Promise.reject(new Error('No tab'));
+    window.__tabRemoved.forEach(listener => listener(1));
+  });
+  await closedWin.waitForFunction(() => document.querySelector('#status-title').textContent === 'Showing last scan');
+  assert.match(await closedWin.locator('#status-problem').textContent(), /Apple Music tab was closed/);
+  assert.equal(await closedWin.locator('#duplicate-list li').count(), 1);
+  assert.equal(await closedWin.locator('#scan').isVisible(), false);
+  assert.equal(await closedWin.locator('#copy-results').isEnabled(), true);
+  assert.notEqual(await closedWin.locator('#playlist-name').textContent(), 'No playlist open');
+  await closedWin.close();
+  console.log('PASS: closing the Apple Music tab preserves the completed snapshot');
+
+  // Clear waits on the cache lock, disables Scan meanwhile, and cancels the debounced announcer.
+  await popup.evaluate(() => localStorage.clear());
+  const clearWin = await openFreshPinned();
+  await clickScanAndComplete(clearWin);
+  await popup.evaluate(() => {
+    window.__scanCacheLockHeld = new Promise(resolve => {
+      navigator.locks.request('amdf:scan-cache', () => new Promise(release => {
+        window.__releaseScanCacheLock = release;
+        resolve();
+      }));
+    });
+  });
+  await popup.evaluate(() => window.__scanCacheLockHeld);
+  await clearWin.locator('#results-search').fill('Numb');
+  await clearWin.evaluate(() => { document.querySelector('#settings').open = true; });
+  await clearWin.locator('#clear-results').click();
+  await clearWin.waitForFunction(() => document.querySelector('#scan').disabled);
+  assert.equal(await clearWin.locator('#duplicate-list li').count(), 1,
+    'results remain while the clear is waiting for the cache lock');
+  await popup.evaluate(() => window.__releaseScanCacheLock());
+  await clearWin.waitForFunction(() => document.querySelector('#status-title').textContent === 'Results cleared');
+  await clearWin.waitForTimeout(650);
+  assert.doesNotMatch(await clearWin.locator('#results-announcer').textContent(), /songs match|songs? shown/,
+    'clearing must cancel the pending debounced results announcement');
+  assert.equal(await clearWin.locator('#scan').isEnabled(), true);
+  await clearWin.close();
+  console.log('PASS: clear disables scan while locked and cancels pending result announcements');
+
+  // A concurrent focus event while Clear waits on the cache lock must not resurrect uncached results.
+  await popup.evaluate(() => localStorage.clear());
+  const clearRaceWin = await openFreshPinned();
+  await clearRaceWin.evaluate(() => {
+    const original = Storage.prototype.setItem;
+    window.__restoreSetItem = () => { Storage.prototype.setItem = original; };
+    Storage.prototype.setItem = function setItem(key, value) {
+      if (key === 'amdf:last-scan:v1') throw new DOMException('full', 'QuotaExceededError');
+      return original.call(this, key, value);
+    };
+  });
+  await clickScanAndComplete(clearRaceWin);
+  await clearRaceWin.evaluate(() => window.__restoreSetItem());
+  await apple.evaluate(() => { window.scenario = 'huge'; window.requests = []; });
+  await clearRaceWin.locator('#scan').click();
+  await clearRaceWin.waitForFunction(() => document.querySelector('#status-code').textContent === 'Error code: LIMIT');
+  await apple.evaluate(() => { window.scenario = 'duplicates'; window.requests = []; });
+  await popup.evaluate(() => {
+    window.__clearRaceLock = new Promise(resolve => {
+      navigator.locks.request('amdf:scan-cache', () => new Promise(release => {
+        window.__releaseClearRaceLock = release;
+        resolve();
+      }));
+    });
+  });
+  await popup.evaluate(() => window.__clearRaceLock);
+  await clearRaceWin.evaluate(() => { document.querySelector('#settings').open = true; });
+  await clearRaceWin.locator('#clear-results').click();
+  await clearRaceWin.waitForFunction(() => document.querySelector('#scan').disabled);
+  await clearRaceWin.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await clearRaceWin.waitForTimeout(150);
+  await popup.evaluate(() => window.__releaseClearRaceLock());
+  await clearRaceWin.waitForFunction(() => document.querySelector('#status-title').textContent === 'Ready to scan');
+  assert.equal(await clearRaceWin.locator('#duplicate-list li').count(), 0,
+    'focus recovery during Clear must not resurrect cleared uncached results');
+  await clearRaceWin.close();
+
+  // Focus during a scan must not cause a matching handoff to scan the same playlist twice,
+  // and a regionless catalog handoff must pin its resolved storefront.
+  await popup.evaluate(() => localStorage.clear());
+  const focusScanWin = await openFreshPinned({ delay: 25 });
+  await apple.evaluate(() => { window.fixtureDelay = 600; window.requests = []; });
+  await focusScanWin.locator('#scan').click();
+  await apple.waitForFunction(() => window.requests.some(path => path.includes('/tracks?')), null, { polling: 50 });
+  await focusScanWin.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await popup.evaluate(() => {
+    localStorage.setItem('amdf:scan-request:v1:1', JSON.stringify({ tab: 1, at: Date.now(), playlist: 'p.fixture' }));
+  });
+  await apple.evaluate(() => { window.fixtureDelay = 25; });
+  await waitScanComplete(focusScanWin);
+  await focusScanWin.waitForTimeout(400);
+  assert.equal(await apple.evaluate(() => window.requests.filter(path => path.includes('/tracks?')).length), 3,
+    'focus during a scan must not let a matching handoff run a second identical scan');
+  await focusScanWin.close();
+
+  await apple.evaluate(() => {
+    window.scenario = 'duplicates'; window.storefrontId = 'us'; window.requests = []; window.fixtureDelay = 25;
+    history.replaceState({}, '', '/playlist/fixture/pl.fixture');
+  });
+  await popup.evaluate(() => { localStorage.clear(); localStorage.setItem('amdf:test:windows', '{}'); });
+  await popup.goto(popupUrl);
+  await popup.waitForFunction(() => !document.querySelector('#scan').disabled);
+  await popup.locator('#scan').click();
+  await popup.waitForFunction(() => window.__createdWindow);
+  const regionlessHandoffUrl = await popup.evaluate(() => window.__createdWindow.url);
+  assert.equal(new URL(regionlessHandoffUrl).searchParams.get('storefront'), 'us',
+    'a regionless catalog handoff must carry its resolved storefront');
+  await apple.evaluate(() => { delete window.storefrontId; });
+  console.log('PASS: clear-vs-focus race, focus-during-scan dedupe, and regionless storefront handoff pinning');
 
   assert.deepEqual([...requestOrigins].sort(), ['https://music.apple.com', 'https://playlist-duplicate-finder.test'],
     'the popup and fixtures must not contact any other origin');

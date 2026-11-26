@@ -14,8 +14,9 @@ export type LocalErrorCode = 'DEADLINE' | 'LIMIT' | 'TAB_ACCESS' | 'TAB_CLOSED';
 export type ErrorCode = BridgeErrorCode | LocalErrorCode;
 
 // A local-only code must never be accepted from the page-world bridge.
+type AssertTrue<T extends true> = T;
 export type _NoLocalCodesInBridge =
-  Extract<BridgeErrorCode, LocalErrorCode> extends never ? true : never;
+  AssertTrue<Extract<BridgeErrorCode, LocalErrorCode> extends never ? true : false>;
 
 export interface PlaylistRef {
   id: string;

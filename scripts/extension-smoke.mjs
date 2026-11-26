@@ -358,6 +358,73 @@ try {
   await scanWindow.close();
   console.log('PASS: default scan window survives toolbar-popup closure and focus loss; real extension rescan comparison');
 
+  // A pop-out that lost its activeTab grant across a cross-origin navigation must
+  // recover when the toolbar popup hands a scan back to it after the tab returns.
+  await apple.goto('https://music.apple.com/us/library/playlist/p.fixture');
+  const recoveryLauncher = await open('duplicates');
+  await recoveryLauncher.evaluate(() => document.querySelector('#pop-out').click());
+  const recoveryTarget = await until(async () => (await cdp.send('Target.getTargets')).targetInfos
+    .find(target => target.url.includes('/popup.html?tab=')), 'cross-origin recovery pop-out');
+  const recoveryWindow = await attach(recoveryTarget.targetId);
+  await until(async () => ['Ready to scan', 'Showing last scan'].includes(
+    await recoveryWindow.evaluate(() => document.querySelector('#status-title')?.textContent)), 'recovery pop-out connection');
+  for (const target of (await cdp.send('Target.getTargets')).targetInfos) {
+    if (target.url === `chrome-extension://${id}/popup.html`) await cdp.send('Target.closeTarget', { targetId: target.targetId });
+  }
+  activePopup = null;
+  await apple.goto('https://blocked.test/');
+  await until(async () => ['Open a playlist', 'Could not connect'].includes(
+    await recoveryWindow.evaluate(() => document.querySelector('#status-title')?.textContent)), 'pop-out notices cross-origin navigation');
+  await apple.goto('https://music.apple.com/us/library/playlist/p.fixture');
+  const grantPopup = await open('duplicates');
+  await grantPopup.evaluate(() => {
+    const option = document.querySelector('#scan-window');
+    option.checked = true;
+    option.dispatchEvent(new Event('change'));
+  });
+  const recoveryWindowsBefore = (await cdp.send('Target.getTargets')).targetInfos
+    .filter(target => target.url.includes('/popup.html?tab=')).length;
+  await grantPopup.evaluate(() => document.querySelector('#scan').click());
+  await until(() => recoveryWindow.evaluate(() => document.querySelector('#status-title').textContent === 'Scan complete'),
+    'toolbar scan handoff recovers a cross-origin pop-out');
+  assert.equal((await cdp.send('Target.getTargets')).targetInfos
+    .filter(target => target.url.includes('/popup.html?tab=')).length, recoveryWindowsBefore,
+    'the recovery handoff must not duplicate the pop-out');
+  for (const target of (await cdp.send('Target.getTargets')).targetInfos) {
+    if (target.url === `chrome-extension://${id}/popup.html`) await cdp.send('Target.closeTarget', { targetId: target.targetId });
+  }
+  activePopup = null;
+  console.log('PASS: cross-origin navigation and return recover through a toolbar scan handoff');
+
+  // While that pop-out is scanning the tab, an inline toolbar scan must not start
+  // a second scan of the same player.
+  await recoveryWindow.evaluate(() => localStorage.clear());
+  await apple.evaluate(() => { window.scenario = 'duplicates'; window.requests = []; window.fixtureDelay = 2_500; });
+  await recoveryWindow.evaluate(() => document.querySelector('#scan').click());
+  await apple.waitForFunction(() => window.requests.some(path => path.includes('/tracks?')), null, { polling: 50 });
+  const concurrent = await open('duplicates');
+  await concurrent.evaluate(() => document.querySelector('#scan').click());
+  await new Promise(resolve => setTimeout(resolve, 400));
+  let inlineTitle = '(closed)';
+  try {
+    inlineTitle = await concurrent.evaluate(() => document.querySelector('#status-title').textContent);
+  } catch (error) {
+    if (!/Target closed|Session closed|No session with given id/.test(error.message)) throw error;
+  }
+  assert.notEqual(inlineTitle, 'Scanning playlist…', 'the inline popup must not start a concurrent scan');
+  assert.equal(await apple.evaluate(() => window.requests.filter(path => path.includes('/tracks?')).length), 0,
+    'blocked inline scan must not issue duplicate /tracks? requests');
+  await apple.evaluate(() => { window.fixtureDelay = 25; });
+  await until(() => recoveryWindow.evaluate(() => document.querySelector('#status-title').textContent === 'Scan complete'),
+    'the original pop-out scan completes');
+  await recoveryWindow.evaluate(() => localStorage.clear());
+  await recoveryWindow.close();
+  for (const target of (await cdp.send('Target.getTargets')).targetInfos) {
+    if (target.url === `chrome-extension://${id}/popup.html`) await cdp.send('Target.closeTarget', { targetId: target.targetId });
+  }
+  activePopup = null;
+  console.log('PASS: concurrent inline scan is blocked while a pop-out scans the same tab');
+
   const blocked = await open('duplicates');
   await apple.goto('https://blocked.test/');
   await blocked.evaluate(() => document.querySelector('#scan').click());

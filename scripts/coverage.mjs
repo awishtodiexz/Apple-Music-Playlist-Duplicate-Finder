@@ -46,7 +46,7 @@ for (const name of bundles) {
     `--temp-directory=.cache/c8/${key}`,
     `--reports-dir=.cache/lcov/${key}`,
     '--reporter=lcov',
-    'node',
+    process.execPath,
     bundle,
   ], { encoding: 'utf8' });
 

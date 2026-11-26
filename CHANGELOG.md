@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [1.7.1](https://github.com/awishtodiexz/Apple-Music-Playlist-Duplicate-Finder/releases/tag/v1.7.1) (2026-11-26)
+
+### Fixed
+
+- Apple Music playlist IDs containing underscores scan end to end instead of being rejected before the first read.
+- Scan handoffs between the toolbar popup and pop-out windows are deduplicated per tab, survive a scan of another playlist, and keep regionless catalog playlists pinned to their resolved storefront.
+- A second window cannot start a concurrent scan of the same tab while one is already running.
+- Completed results survive focus recovery, cache-clearing races, failed rescans and closing the Apple Music tab instead of being erased or resurrected incorrectly.
+- Scan deadlines use a monotonic clock, so forward wall-clock jumps cannot consume the ten-minute budget.
+- Pagination totals and continuation evidence ignore prototype-inherited metadata and reject conflicting explicit nulls.
+- Same-title lookalike grouping cannot collide through control characters, and Unicode CSV filenames truncate at grapheme boundaries within the 255-byte filename limit.
+- Theme and scan-window preference changes synchronize live across open popup windows.
+
 ## [1.7](https://github.com/awishtodiexz/Apple-Music-Playlist-Duplicate-Finder/releases/tag/v1.7) (2026-11-25)
 
 ### Added

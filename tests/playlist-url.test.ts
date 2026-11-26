@@ -16,6 +16,15 @@ test('catalog playlist route is separate from the library', () => {
   });
 });
 
+test('playlist IDs accept underscores in library and catalog routes', () => {
+  assert.deepEqual(detectPlaylist('https://music.apple.com/us/library/playlist/p.abc_123'), {
+    id: 'p.abc_123', kind: 'library', storefront: 'us',
+  });
+  assert.deepEqual(detectPlaylist('https://music.apple.com/us/playlist/mix/pl.u-ABC_1'), {
+    id: 'pl.u-ABC_1', kind: 'catalog', storefront: 'us',
+  });
+});
+
 test('cosmetic route changes do not break detection', () => {
   const expected = { id: 'p.abc123', kind: 'library' as const, storefront: 'us' };
   for (const path of [

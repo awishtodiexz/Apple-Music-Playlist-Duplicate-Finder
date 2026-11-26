@@ -4,7 +4,7 @@ import { connectFailure, errorCode, errorMessage, errorRecovery, recoveryLabel, 
 import { readPlaylist, scanLimits, type PlaylistSource, type ScanProgress } from './playlist-reader';
 import { detectPlaylist } from './playlist-url';
 import { appleMusicId, compareScans, comparisonText, csvFilename, exportLabels, formatGroupText, formatResultsText, lookalikeIdentities, outcomeTitle, positionParts, scanOutcome, songLabel, splitPositions, summarize, summaryLine, toCsv, visibleGroups, type ResultSummary, type SortMode } from './results';
-import { cacheFreshness, clearCachedScan, consumeScanRequest, loadCachedScan, loadScanWindowPreference, loadThemePreference, readScanRequest, saveCachedScan, saveScanWindowPreference, saveThemePreference, scanRequestKeyForTab, storedScanRequest, writeScanRequest, type CachedScan, type CacheFreshness, type ScanCacheRef } from './storage';
+import { cacheFreshness, clearCachedScan, consumeScanRequest, loadCachedScan, loadScanWindowPreference, loadThemePreference, saveCachedScan, saveScanWindowPreference, saveThemePreference, scanRequestKeyForTab, scanWindowKey, storedScanRequest, themeKey, writeScanRequest, type CachedScan, type CacheFreshness, type ScanCacheRef, type ScanRequest } from './storage';
 import { nextTheme, themeLabel, type ThemePreference } from './theme';
 import type { DuplicateGroup, PlaylistInfo, PlaylistRef } from './types';
 
@@ -79,6 +79,8 @@ interface CompletedScan {
   unidentified: number;
   notes: string;
   cached: boolean;
+  modified?: string | null;
+  revision?: string | null;
   comparison: null | { kind: 'unavailable'; previousAt: number } |
     { kind: 'compared'; previousAt: number; data: ReturnType<typeof compareScans> };
 }
@@ -91,10 +93,12 @@ let pendingInfo: PlaylistInfo | null = null;
 let pendingInfoAt = 0;
 const pendingInfoMaxAgeMs = 30_000;
 let currentPlaylist: PlaylistRef | null = null;
+let resolvedStorefront: string | null = null;
 let connectedTabId: number | null = null;
 let currentPlaylistName = '';
 let busy = false;
 let clearingResults = false;
+let clearCount = 0;
 // How the last failure can be recovered from, straight from the error policy table.
 let failure: Recovery | null = null;
 // The playlist the popup currently describes; a pop-out compares it with its tab when it regains focus.
@@ -137,7 +141,7 @@ themeToggle.addEventListener('click', () => {
  */
 function setBadge(count: number | null): void {
   try {
-    if (!chrome.action) return;
+    if (!chrome.action || (count !== null && connectedTabId === null)) return;
     const target = connectedTabId === null ? {} : { tabId: connectedTabId };
     // Fixed red: the badge text is white, and the dark-theme accent is too light for white text.
     void Promise.resolve(chrome.action.setBadgeBackgroundColor({ color: '#c7284e', ...target })).catch(() => {});
@@ -186,12 +190,23 @@ scanWindowOption.hidden = pinnedTabId() !== null;
 updateSettingsVisibility();
 scanWindow.checked = loadScanWindowPreference();
 scanWindow.addEventListener('change', () => saveScanWindowPreference(scanWindow.checked));
+window.addEventListener('storage', event => {
+  if (event.key === themeKey || event.key === null) {
+    themePreference = loadThemePreference();
+    applyTheme();
+  }
+  if (event.key === scanWindowKey || event.key === null) scanWindow.checked = loadScanWindowPreference();
+});
 
 async function openWindow(autoScan: boolean): Promise<void> {
   if (connectedTabId === null) return;
   const url = new URL(chrome.runtime.getURL('popup.html'));
   url.searchParams.set('tab', String(connectedTabId));
-  if (autoScan && currentPlaylist) url.searchParams.set('scan', currentPlaylist.id);
+  if (autoScan && currentPlaylist) {
+    url.searchParams.set('scan', currentPlaylist.id);
+    const storefront = currentPlaylist.kind === 'catalog' ? (currentPlaylist.storefront ?? resolvedStorefront) : null;
+    if (storefront) url.searchParams.set('storefront', storefront);
+  }
   await chrome.windows.create({ url: url.href, type: 'popup', width: 400, height: 760 });
 }
 
@@ -259,6 +274,7 @@ function updatePopOut(): void {
 
 popOut.addEventListener('click', async () => {
   if (connectedTabId === null || busy) return;
+  const refocus = document.activeElement === popOut;
   popOut.disabled = true;
   try {
     await focusOrOpenWindow();
@@ -266,6 +282,7 @@ popOut.addEventListener('click', async () => {
     setStatus('Could not open a window', 'Try Open in a window again.');
   } finally {
     popOut.disabled = false;
+    if (refocus && !popOut.hidden) popOut.focus();
   }
 });
 
@@ -277,6 +294,7 @@ interface StatusOptions {
   problem?: { message: string; error: boolean };
   /** Marks a progress update; repeats of the same phase are announced sparingly. */
   phase?: ScanProgress['phase'];
+  announceExtra?: string;
 }
 
 /**
@@ -299,7 +317,7 @@ function syncDocumentTitle(): void {
   document.title = headline ? `${headline} — ${base}` : base;
 }
 
-function setStatus(title: string, detail: string, { error = false, code, problem, phase }: StatusOptions = {}): void {
+function setStatus(title: string, detail: string, { error = false, code, problem, phase, announceExtra }: StatusOptions = {}): void {
   // Assigning identical text still replaces the node and re-triggers a live
   // region announcement, so only write what actually changed.
   // Progress ticks must not re-open the details a user chose to collapse.
@@ -313,13 +331,18 @@ function setStatus(title: string, detail: string, { error = false, code, problem
   statusCode.textContent = code ? `Error code: ${code}` : '';
   statusCode.hidden = !code;
   announceStatus(phase ?? title, phase !== undefined,
-    [title, detail, problem?.message ?? '', code ? `Error code ${code}` : ''].filter(Boolean).map(endSentence).join(' '));
+    [title, detail, problem?.message ?? '', code ? `Error code ${code}` : '', announceExtra ?? '']
+      .filter(Boolean).map(endSentence).join(' '));
   syncDocumentTitle();
 }
 
 /** Titles carry no final period and details do; a screen reader needs exactly one pause between them. */
 function endSentence(text: string): string {
-  return /[.!?…]$/.test(text) ? text : `${text}.`;
+  return text.split('\n').map(line => {
+    const trimmed = line.trimEnd();
+    if (!trimmed || /[.!?…]$/.test(trimmed)) return trimmed;
+    return `${trimmed}.`;
+  }).join('\n');
 }
 
 // Progress text changes every page, and a screen reader that repeats it is unusable.
@@ -338,6 +361,8 @@ function announceStatus(key: string, repeatable: boolean, text: string): void {
 
 function clearGroups(): void {
   cancelSearchDebounce();
+  clearTimeout(resultsAnnounceTimer);
+  resultsAnnounceTimer = undefined;
   groups = [];
   visible = [];
   displayed = 0;
@@ -389,6 +414,7 @@ function renderPositions(target: HTMLElement, group: DuplicateGroup, limit: numb
 }
 
 const copyTimers = new WeakMap<HTMLElement, ReturnType<typeof setTimeout>>();
+const rowGroups = new WeakMap<HTMLElement, DuplicateGroup>();
 
 /** The row's own button says it worked: feedback far above a long list would never be seen. */
 function confirmRowCopy(button: HTMLButtonElement, ok: boolean, name: string): void {
@@ -407,6 +433,7 @@ function confirmRowCopy(button: HTMLButtonElement, ok: boolean, name: string): v
 function buildGroup(group: DuplicateGroup): HTMLLIElement {
   const { later } = splitPositions(group);
   const item = document.createElement('li');
+  rowGroups.set(item, group);
   item.tabIndex = -1;
   // A span, not a p: summary content is limited to phrasing and heading content.
   const title = document.createElement('span');
@@ -465,26 +492,6 @@ function buildGroup(group: DuplicateGroup): HTMLLIElement {
     toggle.className = 'more-positions';
     toggle.setAttribute('aria-expanded', 'false');
     toggle.textContent = `Show all ${number(group.positions.length)} positions`;
-    toggle.addEventListener('click', () => {
-      const expanded = toggle.getAttribute('aria-expanded') !== 'true';
-      toggle.setAttribute('aria-expanded', String(expanded));
-      toggle.textContent = expanded ? 'Show fewer positions' : `Show all ${number(group.positions.length)} positions`;
-      if (expanded) {
-        renderPositions(positions, group, Infinity);
-        // Thousands of positions stay inside a short scroll area, and the
-        // toggle keeps focus so a keyboard user can collapse it again.
-        positions.tabIndex = 0;
-        positions.setAttribute('role', 'group');
-        positions.setAttribute('aria-label', `All playlist positions for ${name}`);
-        positions.setAttribute('data-expanded', 'true');
-      } else {
-        renderPositions(positions, group, maxInlinePositions);
-        positions.removeAttribute('tabindex');
-        positions.removeAttribute('role');
-        positions.removeAttribute('aria-label');
-        positions.removeAttribute('data-expanded');
-      }
-    });
     detail.append(toggle);
   }
   const copyGroup = document.createElement('button');
@@ -492,12 +499,45 @@ function buildGroup(group: DuplicateGroup): HTMLLIElement {
   copyGroup.className = 'copy-group';
   copyGroup.textContent = 'Copy';
   copyGroup.setAttribute('aria-label', `Copy ${name}`);
-  copyGroup.addEventListener('click', async () => {
-    confirmRowCopy(copyGroup, await copyText(formatGroupText(group)), name);
-  });
   detail.append(copyGroup);
   return item;
 }
+
+list.addEventListener('click', event => {
+  if (!(event.target instanceof Element)) return;
+  const button = event.target.closest('button');
+  if (!(button instanceof HTMLButtonElement)) return;
+  const item = button.closest('li');
+  if (!(item instanceof HTMLLIElement) || !list.contains(item)) return;
+  const group = rowGroups.get(item);
+  if (!group) return;
+  const name = group.artist.trim() ? `${group.name} by ${group.artist}` : group.name;
+  if (button.classList.contains('more-positions')) {
+    const positions = item.querySelector<HTMLElement>('.positions');
+    if (!positions) return;
+    const expanded = button.getAttribute('aria-expanded') !== 'true';
+    button.setAttribute('aria-expanded', String(expanded));
+    button.textContent = expanded ? 'Show fewer positions' : `Show all ${number(group.positions.length)} positions`;
+    if (expanded) {
+      renderPositions(positions, group, Infinity);
+      // Thousands of positions stay inside a short scroll area, and the
+      // toggle keeps focus so a keyboard user can collapse it again.
+      positions.tabIndex = 0;
+      positions.setAttribute('role', 'group');
+      positions.setAttribute('aria-label', `All playlist positions for ${name}`);
+      positions.setAttribute('data-expanded', 'true');
+    } else {
+      renderPositions(positions, group, maxInlinePositions);
+      positions.removeAttribute('tabindex');
+      positions.removeAttribute('role');
+      positions.removeAttribute('aria-label');
+      positions.removeAttribute('data-expanded');
+    }
+    return;
+  }
+  if (!button.classList.contains('copy-group')) return;
+  void copyText(formatGroupText(group)).then(ok => confirmRowCopy(button, ok, name));
+});
 
 function updateResultsTitle(): void {
   const query = resultsSearch.value.trim();
@@ -723,8 +763,10 @@ function scanNotesText(summary: ResultSummary, countVerified: boolean, modificat
 
 /** Serialize reads and writes across extension windows. */
 async function withScanCache<T>(operation: () => T, unavailable: T): Promise<T> {
-  try { return await navigator.locks.request('amdf:scan-cache', operation); }
-  catch { return unavailable; }
+  try {
+    if (typeof navigator.locks?.request !== 'function') return operation();
+    return await navigator.locks.request('amdf:scan-cache', operation);
+  } catch { return unavailable; }
 }
 
 function restoreCached(cached: CachedScan): CompletedScan {
@@ -738,6 +780,8 @@ function restoreCached(cached: CachedScan): CompletedScan {
     // Rebuilt rather than read back, so a scan saved by an older version gets today's wording.
     notes: scanNotesText(summarize(cached.totalTracks, cached.groups, cached.unidentified), cached.countVerified, cached.modificationChecked),
     cached: true,
+    modified: cached.modified,
+    revision: cached.revision,
     comparison: null,
   };
   applyCompleted(completed);
@@ -776,30 +820,6 @@ const neutralConnectTitles: Readonly<Record<string, string | undefined>> = {
   LIMIT: 'Playlist too large to scan',
   TAB_CLOSED: 'Apple Music tab closed',
 };
-
-async function cacheCurrent(cacheRef: ScanCacheRef, info: PlaylistInfo, countVerified: boolean,
-  modificationChecked: boolean): Promise<void> {
-  const cached: CachedScan = {
-    version: 1,
-    ...cacheRef,
-    playlistName: info.name,
-    groups,
-    unidentified,
-    totalTracks,
-    countVerified,
-    modificationChecked,
-    notes: scanNotes,
-    modified: info.modified,
-    revision: info.revision ?? null,
-  };
-  const saved = await withScanCache(() => saveCachedScan(cached), false);
-  if (!saved) resultsFeedback.textContent = tooLargeToKeep;
-  if (lastCompleted) {
-    lastCompleted.cached = saved;
-    clearResults.hidden = !clearAvailable(lastCompleted);
-    updateSettingsVisibility();
-  }
-}
 
 async function copyText(text: string): Promise<boolean> {
   try {
@@ -888,9 +908,11 @@ function setResultsView(shown: boolean): void {
   updateNameToggle();
 }
 
+let refocusScanAfterConnect = false;
 /** Give focus back to the scan button, or to the status when a failure left no button to press. */
 function focusScan(): void {
-  if (!scan.hidden) { scan.focus(); return; }
+  if (!scan.hidden && !scan.disabled) { scan.focus(); return; }
+  if (busy) refocusScanAfterConnect = true;
   statusTitle.tabIndex = -1;
   statusTitle.focus();
 }
@@ -898,6 +920,9 @@ function focusScan(): void {
 async function initialize(): Promise<void> {
   // "Retry connection" disables the focused button; give focus back afterwards.
   const refocus = document.activeElement === scan;
+  const previousCompleted = lastCompleted;
+  const previousPlaylist = shownPlaylist;
+  const clearAtStart = clearCount;
   busy = true;
   failure = null;
   shownPlaylist = null;
@@ -908,6 +933,7 @@ async function initialize(): Promise<void> {
   clearGroups();
   source = null;
   currentPlaylist = null;
+  resolvedStorefront = null;
   pendingInfo = null;
   scan.disabled = true;
   scan.hidden = false;
@@ -945,6 +971,17 @@ async function initialize(): Promise<void> {
     if (playlist.kind === 'catalog' && playlist.storefront === null) {
       cached = await withScanCache(() => loadCachedScan(playlist.id, info.storefront), null);
       if (cached) restoreCached(cached);
+    } else if (cached) {
+      const currentCached = await withScanCache(() => loadCachedScan(playlist.id, playlist.storefront), null);
+      if (!currentCached) {
+        lastCompleted = null;
+        clearGroups();
+        setBadge(null);
+        cached = null;
+      } else if (currentCached.scannedAt !== cached.scannedAt || currentCached.scanId !== cached.scanId) {
+        cached = currentCached;
+        restoreCached(cached);
+      }
     }
     currentPlaylistName = info.name;
     showPlaylistName(info.name, info.name);
@@ -954,14 +991,27 @@ async function initialize(): Promise<void> {
     pendingInfoAt = Date.now();
     source = candidate;
     currentPlaylist = playlist;
+    resolvedStorefront = playlist.kind === 'catalog' ? info.storefront ?? null : null;
+    const restoreUncached = !cached && clearCount === clearAtStart && !clearingResults &&
+      previousCompleted !== null && !previousCompleted.cached &&
+      previousPlaylist !== null && previousPlaylist.id === playlist.id && previousPlaylist.kind === playlist.kind &&
+      (playlist.kind !== 'catalog' || previousCompleted.cacheRef.storefront === (info.storefront ?? null));
+    if (restoreUncached) applyCompleted(previousCompleted);
     if (cached && lastCompleted) {
       setStatus('Showing last scan', `${lastScanDetail(lastCompleted)} ${refreshAdvice[cacheFreshness(cached, info)]}`);
+    } else if (restoreUncached) {
+      setStatus('Showing last scan', `${lastScanDetail(previousCompleted)} ${refreshAdvice[cacheFreshness(previousCompleted, info)]}`);
     } else {
       // No cache, or the user cleared it while this connection was in flight:
       // neither case may claim to be showing a cached scan.
       setStatus('Ready to scan', 'Find songs listed more than once. Keep this open while scanning.');
     }
   } catch (error) {
+    if (error instanceof ScanError && error.code === 'TAB_CLOSED' && previousCompleted &&
+      clearCount === clearAtStart && !clearingResults) {
+      applyCompleted(previousCompleted);
+      showPlaylistName(previousCompleted.playlistName, previousCompleted.playlistName);
+    }
     const { message, recovery } = connectFailure(error);
     const code = errorCode(error);
     const neutralTitle = neutralConnectTitles[code];
@@ -977,11 +1027,13 @@ async function initialize(): Promise<void> {
     }
   } finally {
     busy = false;
-    scan.disabled = false;
+    scan.disabled = clearingResults;
     updateScanLabel();
     updatePopOut();
-    if (refocus) focusScan();
-    if (!recheckPending) adoptScanRequest();
+    const shouldRefocus = refocus || refocusScanAfterConnect;
+    refocusScanAfterConnect = false;
+    if (shouldRefocus) focusScan();
+    if (!recheckPending) adoptScanRequest(false);
     replayRecheck();
     syncDocumentTitle();
   }
@@ -995,15 +1047,28 @@ async function initialize(): Promise<void> {
  * or when the last failure offered no retry (a playlist over the limit may have been trimmed).
  */
 let recheckPending = false;
+let rechecking = false;
 async function recheckPinnedTab(): Promise<void> {
   const pinned = pinnedTabId();
   if (pinned === null) return;
-  if (busy) { recheckPending = true; return; }
-  let current: PlaylistRef | null;
-  try { current = detectPlaylist((await chrome.tabs.get(pinned)).url ?? ''); } catch { current = null; }
-  if (busy) { recheckPending = true; return; }
-  if (current?.id !== shownPlaylist?.id || current?.kind !== shownPlaylist?.kind ||
-    (current?.kind === 'catalog' && current.storefront !== shownPlaylist?.storefront) || failure === 'none') await initialize();
+  if (busy || rechecking || clearingResults) { recheckPending = true; return; }
+  rechecking = true;
+  let shouldInit = false;
+  try {
+    let current: PlaylistRef | null;
+    try { current = detectPlaylist((await chrome.tabs.get(pinned)).url ?? ''); } catch { current = null; }
+    if (busy || clearingResults) { recheckPending = true; return; }
+    shouldInit = current?.id !== shownPlaylist?.id || current?.kind !== shownPlaylist?.kind ||
+      (current?.kind === 'catalog' && current.storefront !== shownPlaylist?.storefront) || failure === 'none';
+  } finally {
+    rechecking = false;
+  }
+  if (shouldInit) {
+    await initialize();
+  } else {
+    adoptScanRequest();
+    replayRecheck();
+  }
 }
 
 /** An event that arrived while connecting or scanning described the page before that work finished. */
@@ -1012,27 +1077,39 @@ function replayRecheck(): void {
   recheckPending = false;
   void recheckPinnedTab();
 }
+
+function matchesScanRequest(playlist: PlaylistRef | null, storefront: string | null, request: ScanRequest): boolean {
+  if (request.playlist !== undefined && (playlist === null || playlist.id !== request.playlist)) return false;
+  if (request.storefront !== undefined &&
+    (playlist === null || playlist.kind !== 'catalog' || (playlist.storefront ?? storefront) !== request.storefront)) return false;
+  return true;
+}
+
 /**
  * Start a scan handed to this pop-out, or leave it stored while a connect or clear finishes.
- * A request that arrives during a scan is consumed and dropped: that scan already fulfills it.
+ * Reads the live storage entry so a stale storage event cannot run an overwritten or removed request.
  */
-function adoptScanRequest(raw?: string): void {
+function adoptScanRequest(allowReconnect = true): void {
   const pinned = pinnedTabId();
   if (pinned === null) return;
-  const stored = raw ? (() => {
-    const request = readScanRequest(raw);
-    return request ? { raw, request } : null;
-  })() : storedScanRequest(pinned);
+  const stored = storedScanRequest(pinned);
   if (!stored || stored.request.tab !== pinned) return;
   if (scanController !== null) {
+    if (matchesScanRequest(currentPlaylist, resolvedStorefront, stored.request)) consumeScanRequest(pinned, stored.raw);
+    return;
+  }
+  if (busy || rechecking || clearingResults) return;
+  const needsReconnect = !currentPlaylist || !source || !matchesScanRequest(currentPlaylist, resolvedStorefront, stored.request) ||
+    failure === 'reconnect' || failure === 'navigate' || failure === 'none';
+  if (needsReconnect) {
+    if (allowReconnect) {
+      void initialize();
+      return;
+    }
     consumeScanRequest(pinned, stored.raw);
     return;
   }
-  if (busy || clearingResults || !currentPlaylist) return;
-  consumeScanRequest(pinned, stored.raw);
-  if (stored.request.playlist && stored.request.playlist !== currentPlaylist.id) return;
-  if (!source || failure) return;
-  void startScan();
+  if (consumeScanRequest(pinned, stored.raw)) void startScan();
 }
 
 const pinnedTab = pinnedTabId();
@@ -1053,7 +1130,7 @@ if (pinnedTab !== null) {
   // progress leaves it stored so it can start as soon as the playlist is ready.
   window.addEventListener('storage', event => {
     if (event.key !== scanRequestKeyForTab(pinnedTab) || typeof event.newValue !== 'string') return;
-    adoptScanRequest(event.newValue);
+    adoptScanRequest();
   });
 }
 
@@ -1125,7 +1202,7 @@ document.addEventListener('keydown', event => {
 copyResults.addEventListener('click', async () => {
   const scope = visible.length < groups.length ?
     `Filtered to ${number(visible.length)} of ${number(groups.length)} repeated songs.` : undefined;
-  const text = formatResultsText(currentPlaylistName || 'Current playlist', visible, summarize(totalTracks, visible, unidentified), scanNotes, scope);
+  const text = formatResultsText(currentPlaylistName || 'Current playlist', visible, summarize(totalTracks, groups, unidentified), scanNotes, scope);
   if (await copyText(text)) {
     resultsFeedback.textContent = exportLabels(visible.length, visible.length < groups.length).copied;
   } else {
@@ -1141,12 +1218,19 @@ downloadResults.addEventListener('click', () => {
 clearResults.addEventListener('click', async () => {
   const completed = lastCompleted;
   if (!completed || clearingResults) return;
+  clearCount++;
   clearingResults = true;
   clearResults.disabled = true;
+  scan.disabled = true;
   await withScanCache(() => clearCachedScan(completed.cacheRef), undefined);
   clearingResults = false;
   clearResults.disabled = scanController !== null;
-  if (lastCompleted !== completed) return;
+  scan.disabled = busy;
+  if (lastCompleted !== completed) {
+    replayRecheck();
+    adoptScanRequest();
+    return;
+  }
   lastCompleted = null;
   clearGroups();
   setBadge(null);
@@ -1157,6 +1241,7 @@ clearResults.addEventListener('click', async () => {
     source ? 'Run a scan to find repeated songs again.' : `Press ${scan.textContent}, then scan again.`);
   // The button that had focus is now hidden; keep keyboard users in the popup.
   focusScan();
+  replayRecheck();
   adoptScanRequest();
 });
 
@@ -1184,6 +1269,12 @@ function progressStatus(event: ScanProgress, keepNote: string): { title: string;
   }
 }
 
+function comparisonAnnouncement(comparison: NonNullable<CompletedScan['comparison']>): string {
+  const text = comparison.kind === 'unavailable' ?
+    'Some songs could not be identified in one of these scans, so changes cannot be confirmed.' : comparisonText(comparison.data);
+  return `Since your last scan. ${text}`;
+}
+
 async function startScan(): Promise<void> {
   if (busy || clearingResults) return;
   if (!source || !currentPlaylist) { await initialize(); return; }
@@ -1203,7 +1294,8 @@ async function startScan(): Promise<void> {
       if (existing !== null && tabId !== null) {
         try {
           await chrome.windows.update(existing, { focused: true });
-          writeScanRequest(tabId, currentPlaylist.id);
+          writeScanRequest(tabId, currentPlaylist.id,
+            currentPlaylist.kind === 'catalog' ? (currentPlaylist.storefront ?? resolvedStorefront ?? undefined) : undefined);
           return;
         } catch { /* The matching window may have closed after enumeration. */ }
       }
@@ -1218,146 +1310,229 @@ async function startScan(): Promise<void> {
     }
     return;
   }
-  busy = true;
-  failure = null;
-  const age = Date.now() - pendingInfoAt;
-  const regionlessCatalog = currentPlaylist.kind === 'catalog' && currentPlaylist.storefront === null;
-  const baselineInfo = !regionlessCatalog && pendingInfo && age >= 0 && age <= pendingInfoMaxAgeMs ? pendingInfo : undefined;
-  pendingInfo = null;
-  updatePopOut();
-  const controller = new AbortController();
-  scanController = controller;
-  // Disabling the focused Scan button would drop keyboard focus onto the body.
-  const focusCancel = document.activeElement === scan;
-  cancel.hidden = false;
-  scan.disabled = true;
-  scan.textContent = 'Scanning…';
-  if (focusCancel) cancel.focus();
-  // The badge and the results on screen describe the last completed scan; keep
-  // them (and the user's search/sort) until a new completed scan replaces them.
-  // Clear stays unavailable so it cannot race the scan's own cache write.
-  const showingPrevious = lastCompleted !== null;
-  if (!showingPrevious) clearGroups();
-  results.setAttribute('aria-busy', 'true');
-  clearResults.disabled = true;
-  resultsFeedback.textContent = '';
-  const keepNote = showingPrevious ? '\nPrevious results stay visible until this scan completes.' : '';
-  progress.hidden = false;
-  progress.removeAttribute('value');
-  setStatus('Scanning playlist…', `Connecting to Apple Music…${keepNote}`, { phase: 'reading' });
-  // The first page shows at once; after that, steady reading updates are throttled.
-  let lastReading = 0;
-  let scanStorefront: string | undefined;
+  const scanTabId = connectedTabId;
+  const playlist = currentPlaylist;
   const scanSource = source;
-  try {
-    const result = await readPlaylist({
-      ...scanSource,
-      metadata: async signal => {
-        const info = await scanSource.metadata(signal);
-        scanStorefront = info.storefront;
-        return info;
-      },
-    }, event => {
-      const timestamp = Date.now();
-      if (event.phase === 'reading' && lastReading > 0 && timestamp - lastReading < statusThrottleMs) return;
-      lastReading = event.phase === 'reading' && event.retrieved > 0 ? timestamp : 0;
-      // The bar moves with the text, so the two never disagree.
-      if (event.total !== null && event.total > 0) {
-        progress.max = event.total;
-        progress.value = event.retrieved;
-      } else progress.removeAttribute('value');
-      if (event.phase === 'reading') scanReading = { retrieved: event.retrieved, total: event.total };
-      const { title, detail } = progressStatus(event, keepNote);
-      setStatus(title, detail, { phase: event.phase });
-    }, { signal: controller.signal, ...(baselineInfo ? { info: baselineInfo } : {}) });
-    const duplicates = findDuplicates(result.tracks);
-    currentPlaylistName = result.info.name;
-    showPlaylistName(result.info.name, result.info.name);
-    totalTracks = result.tracks.length;
-    unidentified = duplicates.unidentified;
-    const resultSummary = summarize(totalTracks, duplicates.groups, unidentified);
-    scanNotes = scanNotesText(resultSummary, result.countVerified, result.modificationChecked);
-    // Without results on screen, the caveats have nowhere else to go.
-    const notesInStatus = duplicates.groups.length === 0 && scanNotes ? `\n${scanNotes}` : '';
-    const scannedAt = Date.now();
-    const storefront = currentPlaylist.kind === 'catalog' ? result.info.storefront ?? null : null;
-    const playlistId = currentPlaylist.id;
-    const cacheRef: ScanCacheRef = { playlistId, storefront, scannedAt, scanId: crypto.randomUUID() };
-    const previous = (currentPlaylist.kind !== 'catalog' || lastCompleted?.cacheRef.storefront === storefront ? lastCompleted : null) ??
-      (regionlessCatalog ? await withScanCache(() => loadCachedScan(playlistId, storefront), null) : null);
-    const comparison: CompletedScan['comparison'] = previous === null ? null :
-      previous.unidentified > 0 || unidentified > 0 ? { kind: 'unavailable', previousAt: previous.scannedAt } :
-        { kind: 'compared', previousAt: previous.scannedAt, data: compareScans(previous.groups, duplicates.groups) };
-    // With a list below, the summary stays one line; the date is on the next visit's "last scan".
-    const scannedLine = duplicates.groups.length === 0 ? `\nScanned ${formatDate(scannedAt)}.` : '';
-    setStatus(outcomeTitle[scanOutcome(resultSummary)], `${summaryLine(resultSummary)}${notesInStatus}${scannedLine}`);
-    // Only this completed, fully validated scan may replace the last success.
-    applyCompleted({
-      playlistName: result.info.name,
-      scannedAt,
-      cacheRef,
-      groups: duplicates.groups,
-      totalTracks,
-      unidentified,
-      notes: scanNotes,
-      cached: false,
-      comparison,
-    });
-    await cacheCurrent(cacheRef, result.info, result.countVerified, result.modificationChecked);
-  } catch (error) {
-    if (regionlessCatalog && scanStorefront !== undefined && lastCompleted?.cacheRef.storefront !== scanStorefront) {
-      lastCompleted = null;
+  // Claim busy/disabled synchronously before awaiting the per-tab Web Lock so
+  // rapid re-clicks and callers awaiting button state cannot race the lock.
+  const focusCancel = document.activeElement === scan;
+  busy = true;
+  scan.disabled = true;
+  updatePopOut();
+  const runScan = async (): Promise<void> => {
+    failure = null;
+    const age = Date.now() - pendingInfoAt;
+    const regionlessCatalog = playlist.kind === 'catalog' && playlist.storefront === null;
+    const baselineInfo = !regionlessCatalog && pendingInfo && age >= 0 && age <= pendingInfoMaxAgeMs ? pendingInfo : undefined;
+    pendingInfo = null;
+    const controller = new AbortController();
+    scanController = controller;
+    cancel.hidden = false;
+    scan.textContent = 'Scanning…';
+    if (focusCancel) cancel.focus();
+    // The badge and the results on screen describe the last completed scan; keep
+    // them (and the user's search/sort) until a new completed scan replaces them.
+    // Clear stays unavailable so it cannot race the scan's own cache write.
+    const showingPrevious = lastCompleted !== null;
+    if (!showingPrevious) clearGroups();
+    results.setAttribute('aria-busy', 'true');
+    clearResults.disabled = true;
+    resultsFeedback.textContent = '';
+    const keepNote = showingPrevious ? '\nPrevious results stay visible until this scan completes.' : '';
+    progress.hidden = false;
+    progress.removeAttribute('value');
+    scanDetails.open = true;
+    setStatus('Scanning playlist…', `Connecting to Apple Music…${keepNote}`, { phase: 'reading' });
+    // The first page shows at once; after that, steady reading updates are throttled.
+    let lastReading = 0;
+    let scanStorefront: string | undefined;
+    let cancelHadFocus = false;
+    try {
+      const result = await readPlaylist({
+        ...scanSource,
+        metadata: async signal => {
+          const info = await scanSource.metadata(signal);
+          scanStorefront = info.storefront;
+          return info;
+        },
+      }, event => {
+        const timestamp = Date.now();
+        if (event.phase === 'reading' && lastReading > 0 && timestamp - lastReading < statusThrottleMs) return;
+        lastReading = event.phase === 'reading' && event.retrieved > 0 ? timestamp : 0;
+        // The bar moves with the text, so the two never disagree.
+        if (event.total !== null && event.total > 0) {
+          progress.max = event.total;
+          progress.value = event.retrieved;
+        } else progress.removeAttribute('value');
+        if (event.phase === 'reading') scanReading = { retrieved: event.retrieved, total: event.total };
+        const { title, detail } = progressStatus(event, keepNote);
+        setStatus(title, detail, { phase: event.phase });
+      }, { signal: controller.signal, ...(baselineInfo ? { info: baselineInfo } : {}) });
+      const duplicates = findDuplicates(result.tracks);
+      currentPlaylistName = result.info.name;
+      showPlaylistName(result.info.name, result.info.name);
+      totalTracks = result.tracks.length;
+      unidentified = duplicates.unidentified;
+      const resultSummary = summarize(totalTracks, duplicates.groups, unidentified);
+      scanNotes = scanNotesText(resultSummary, result.countVerified, result.modificationChecked);
+      // Without results on screen, the caveats have nowhere else to go.
+      const notesInStatus = duplicates.groups.length === 0 && scanNotes ? `\n${scanNotes}` : '';
+      const scannedAt = Date.now();
+      const storefront = playlist.kind === 'catalog' ? result.info.storefront ?? null : null;
+      const playlistId = playlist.id;
+      const cacheRef: ScanCacheRef = { playlistId, storefront, scannedAt, scanId: crypto.randomUUID() };
+      const cachedPayload: CachedScan = {
+        version: 1,
+        ...cacheRef,
+        playlistName: result.info.name,
+        groups: duplicates.groups,
+        unidentified,
+        totalTracks,
+        countVerified: result.countVerified,
+        modificationChecked: result.modificationChecked,
+        notes: scanNotes,
+        modified: result.info.modified,
+        revision: result.info.revision ?? null,
+      };
+      // Reading and validation already succeeded; hide Cancel before waiting on the cache lock.
+      cancelHadFocus = document.activeElement === cancel;
+      cancel.hidden = true;
+      const { storedBaseline, saved } = await withScanCache(() => ({
+        storedBaseline: loadCachedScan(playlistId, storefront),
+        saved: saveCachedScan(cachedPayload),
+      }), { storedBaseline: null, saved: false });
+      const inMemory = (playlist.kind !== 'catalog' || lastCompleted?.cacheRef.storefront === storefront) ? lastCompleted : null;
+      let previous: CompletedScan | CachedScan | null;
+      if (inMemory && storedBaseline) {
+        previous = inMemory.scannedAt > storedBaseline.scannedAt ? inMemory :
+          storedBaseline.scannedAt > inMemory.scannedAt ? storedBaseline :
+            inMemory.cacheRef.scanId === storedBaseline.scanId ? inMemory : storedBaseline;
+      } else {
+        previous = inMemory ?? storedBaseline;
+      }
+      const comparison: CompletedScan['comparison'] = previous === null ? null :
+        previous.unidentified > 0 || unidentified > 0 ? { kind: 'unavailable', previousAt: previous.scannedAt } :
+          { kind: 'compared', previousAt: previous.scannedAt, data: compareScans(previous.groups, duplicates.groups) };
+      // With a list below, the summary stays one line; the date is on the next visit's "last scan".
+      const scannedLine = duplicates.groups.length === 0 ? `\nScanned ${formatDate(scannedAt)}.` : '';
+      scanController = null;
+      setStatus(outcomeTitle[scanOutcome(resultSummary)], `${summaryLine(resultSummary)}${notesInStatus}${scannedLine}`,
+        { announceExtra: comparison ? comparisonAnnouncement(comparison) : undefined });
+      // Only this completed, fully validated scan may replace the last success.
+      applyCompleted({
+        playlistName: result.info.name,
+        scannedAt,
+        cacheRef,
+        groups: duplicates.groups,
+        totalTracks,
+        unidentified,
+        notes: scanNotes,
+        cached: saved,
+        modified: result.info.modified,
+        revision: result.info.revision ?? null,
+        comparison,
+      });
+      if (!saved) resultsFeedback.textContent = tooLargeToKeep;
+    } catch (error) {
+      if (regionlessCatalog && scanStorefront !== undefined && lastCompleted?.cacheRef.storefront !== scanStorefront) {
+        lastCompleted = null;
+      }
+      // A failed or cancelled scan never replaces the last completed result. When
+      // one exists, restore it and state plainly that it is not this scan's output.
+      if (!lastCompleted) clearGroups();
+      const cancelled = error instanceof ScanError && error.code === 'CANCELLED';
+      const recovery = errorRecovery(error);
+      // A cancel is the user's choice, not a failure: the ordinary scan button comes back.
+      failure = cancelled ? null : recovery;
+      const code = cancelled ? undefined : errorCode(error);
+      if (lastCompleted) {
+        const previous = lastCompleted;
+        applyCompleted(previous);
+        setStatus(cancelled ? 'Scan cancelled' : 'Scan failed',
+          `${errorMessage(error)}\n${lastCompletedNotice(previous)}`, { error: !cancelled, code });
+      } else {
+        setBadge(null);
+        setStatus(cancelled ? 'Scan cancelled' : 'Scan failed', errorMessage(error), { error: !cancelled, code });
+      }
+      if (recovery === 'reconnect') {
+        source = null;
+        currentPlaylist = null;
+      }
+    } finally {
+      // Hiding the focused Cancel button would drop keyboard focus onto the body.
+      const restoreFocus = cancelHadFocus || document.activeElement === cancel || document.activeElement === scan;
+      busy = false;
+      scanController = null;
+      cancel.hidden = true;
+      scan.disabled = clearingResults;
+      results.removeAttribute('aria-busy');
+      clearResults.disabled = false;
+      updateScanLabel();
+      updatePopOut();
+      progress.hidden = true;
+      scanReading = null;
+      if (restoreFocus) focusScan();
+      replayRecheck();
+      if (!recheckPending && !busy) adoptScanRequest(true);
+      syncDocumentTitle();
     }
-    // A failed or cancelled scan never replaces the last completed result. When
-    // one exists, restore it and state plainly that it is not this scan's output.
-    if (!lastCompleted) clearGroups();
-    const cancelled = error instanceof ScanError && error.code === 'CANCELLED';
-    const recovery = errorRecovery(error);
-    // A cancel is the user's choice, not a failure: the ordinary scan button comes back.
-    failure = cancelled ? null : recovery;
-    const code = cancelled ? undefined : errorCode(error);
-    if (lastCompleted) {
-      const previous = lastCompleted;
-      applyCompleted(previous);
-      setStatus(cancelled ? 'Scan cancelled' : 'Scan failed',
-        `${errorMessage(error)}\n${lastCompletedNotice(previous)}`, { error: !cancelled, code });
-    } else {
-      setBadge(null);
-      setStatus(cancelled ? 'Scan cancelled' : 'Scan failed', errorMessage(error), { error: !cancelled, code });
+  };
+  if (scanTabId !== null && typeof navigator.locks?.request === 'function') {
+    let competing = false;
+    try {
+      await navigator.locks.request(`amdf:scan-tab:${scanTabId}`, { ifAvailable: true }, async lock => {
+        if (lock === null) {
+          competing = true;
+          return;
+        }
+        await runScan();
+      });
+    } catch {
+      await runScan();
+      return;
     }
-    if (recovery === 'reconnect') {
-      source = null;
-      currentPlaylist = null;
+    if (!competing) return;
+    try {
+      if (pinnedTabId() === null) {
+        try {
+          const existing = await scanWindowForTab(scanTabId);
+          if (existing !== null) {
+            await chrome.windows.update(existing, { focused: true });
+            return;
+          }
+        } catch { /* The scan window may have closed after enumeration. */ }
+      }
+      setStatus('Scan already in progress', 'Another window is already scanning this tab.');
+    } finally {
+      busy = false;
+      scan.disabled = clearingResults;
+      updatePopOut();
+      if (focusCancel) focusScan();
+      replayRecheck();
+      syncDocumentTitle();
     }
-  } finally {
-    // Hiding the focused Cancel button would drop keyboard focus onto the body.
-    const restoreFocus = document.activeElement === cancel || document.activeElement === scan;
-    busy = false;
-    scanController = null;
-    cancel.hidden = true;
-    scan.disabled = false;
-    results.removeAttribute('aria-busy');
-    clearResults.disabled = false;
-    updateScanLabel();
-    updatePopOut();
-    progress.hidden = true;
-    scanReading = null;
-    if (restoreFocus) focusScan();
-    replayRecheck();
-    syncDocumentTitle();
+    return;
   }
+  await runScan();
 }
+
 scan.addEventListener('click', () => { void startScan(); });
 
 // Consume the handoff once. Reloading a scan window must not start another scan.
 const startupUrl = new URL(location.href);
 const requestedScan = startupUrl.searchParams.get('scan');
-if (requestedScan !== null) {
+const requestedStorefrontRaw = startupUrl.searchParams.get('storefront');
+if (requestedScan !== null || requestedStorefrontRaw !== null) {
   startupUrl.searchParams.delete('scan');
+  startupUrl.searchParams.delete('storefront');
   history.replaceState(null, '', startupUrl.href);
 }
+const requestedStorefront = requestedStorefrontRaw !== null && /^[a-z]{2}$/.test(requestedStorefrontRaw) ? requestedStorefrontRaw : null;
+const invalidStorefront = requestedStorefrontRaw !== null && requestedStorefront === null;
 void initialize().then(() => {
-  if (requestedScan !== null && pinnedTabId() !== null && currentPlaylist?.id === requestedScan && source && !failure) {
+  if (requestedScan !== null && pinnedTabId() !== null && currentPlaylist?.id === requestedScan && source && !failure &&
+    !invalidStorefront && (requestedStorefront === null ||
+      (currentPlaylist.kind === 'catalog' && (currentPlaylist.storefront ?? resolvedStorefront) === requestedStorefront))) {
     void startScan();
   }
 });

@@ -225,7 +225,7 @@ export async function musicKitBridge(request: BridgeRequest): Promise<BridgeRepl
     // must fail closed with a fixed code and must never reach the API.
     const playlist = request.playlist;
     if (!playlist || typeof playlist.id !== 'string' ||
-      !/^(?:p|pl)\.[A-Za-z0-9-]{1,126}$/.test(playlist.id) ||
+      !/^(?:p|pl)\.[A-Za-z0-9_-]{1,126}$/.test(playlist.id) ||
       (playlist.kind !== 'library' && playlist.kind !== 'catalog')) fail('NOT_PLAYLIST');
     if (request.action !== 'metadata' && request.action !== 'tracks') fail('FORMAT');
     const expectedPlayerStorefront = request.expectedPlayerStorefront;
@@ -408,9 +408,13 @@ export async function musicKitBridge(request: BridgeRequest): Promise<BridgeRepl
     // When both envelopes provide pagination evidence it must agree: a lower
     // body total or an explicit body null must not hide a wrapper total or a
     // continuation link that says more entries exist.
-    const bodyTotal = totalOf(obj(body.meta)?.total);
-    const rootTotal = root === body ? null : totalOf(obj(root!.meta)?.total);
-    if (bodyTotal !== null && rootTotal !== null && bodyTotal !== rootTotal) fail('INCOMPLETE');
+    const bodyMeta = obj(body.meta);
+    const rootMeta = root === body ? null : obj(root!.meta);
+    const bodyTotalPresent = bodyMeta !== null && Object.hasOwn(bodyMeta, 'total') && bodyMeta.total !== undefined;
+    const rootTotalPresent = rootMeta !== null && Object.hasOwn(rootMeta, 'total') && rootMeta.total !== undefined;
+    const bodyTotal = bodyTotalPresent ? totalOf(bodyMeta.total) : null;
+    const rootTotal = rootTotalPresent ? totalOf(rootMeta.total) : null;
+    if (bodyTotalPresent && rootTotalPresent && bodyTotal !== rootTotal) fail('INCOMPLETE');
     const total = bodyTotal ?? rootTotal;
     const bodyNext = body.next;
     const rootNext = root === body ? undefined : root!.next;

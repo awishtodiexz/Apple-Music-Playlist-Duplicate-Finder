@@ -2,7 +2,8 @@ import { isThemePreference, type ThemePreference } from './theme';
 import type { DuplicateGroup, PlaylistInfo } from './types';
 
 const cacheKey = 'amdf:last-scan:v1';
-const themeKey = 'amdf:theme:v1';
+export const themeKey = 'amdf:theme:v1';
+export const scanWindowKey = 'amdf:scan-window:v1';
 // Chromium allows 5,000,000 characters per origin; a full 50,000-track scan with
 // 25,000 groups measures 2.97 MB, so this leaves headroom without risking quota errors.
 const maxCacheChars = 4_500_000;
@@ -16,7 +17,7 @@ const maxIdentity = 256;
 const maxNotes = 20_000;
 // ECMAScript's maximum valid Date value; larger timestamps render as "Invalid Date".
 const maxTimestamp = 8_640_000_000_000_000;
-const playlistIdPattern = /^(?:p|pl)\.[A-Za-z0-9-]{1,126}$/;
+const playlistIdPattern = /^(?:p|pl)\.[A-Za-z0-9_-]{1,126}$/;
 
 export interface CachedScan {
   version: 1;
@@ -47,7 +48,7 @@ export type ScanCacheRef = Pick<CachedScan, 'playlistId' | 'storefront' | 'scann
  * marker available on both sides must agree: a matching modification date must
  * not hide a changed revision hash. Missing markers prove nothing.
  */
-export function cacheFreshness(scan: CachedScan, info: PlaylistInfo): CacheFreshness {
+export function cacheFreshness(scan: Pick<CachedScan, 'totalTracks' | 'modified' | 'revision'>, info: PlaylistInfo): CacheFreshness {
   if (typeof info.total === 'number' && scan.totalTracks !== info.total) return 'changed';
   const comparable: Array<[string | null | undefined, string | null | undefined]> = [
     [scan.modified, info.modified],
@@ -227,11 +228,11 @@ export function saveThemePreference(preference: ThemePreference): void {
 
 /** Scans use a persistent window unless the user explicitly chooses the popup. */
 export function loadScanWindowPreference(): boolean {
-  try { return storage()?.getItem('amdf:scan-window:v1') !== 'false'; } catch { return true; }
+  try { return storage()?.getItem(scanWindowKey) !== 'false'; } catch { return true; }
 }
 
 export function saveScanWindowPreference(enabled: boolean): void {
-  try { storage()?.setItem('amdf:scan-window:v1', String(enabled)); } catch { /* ignore */ }
+  try { storage()?.setItem(scanWindowKey, String(enabled)); } catch { /* ignore */ }
 }
 
 // A scan handed off to an already-open pop-out cannot travel in the URL the way a
@@ -246,14 +247,17 @@ export interface ScanRequest {
   tab: number;
   at: number;
   playlist?: string;
+  storefront?: string;
 }
 
 /** Never throws; a missing or full storage simply drops the request. */
-export function writeScanRequest(tabId: number, playlistId?: string): void {
+export function writeScanRequest(tabId: number, playlistId?: string, storefront?: string): void {
   const store = storage();
   if (!store) return;
+  const validStorefront = storefront !== undefined && /^[a-z]{2}$/.test(storefront) && playlistId?.startsWith('pl.') ? storefront : undefined;
   try {
-    store.setItem(scanRequestKeyForTab(tabId), JSON.stringify({ tab: tabId, at: Date.now(), ...(playlistId ? { playlist: playlistId } : {}) }));
+    store.setItem(scanRequestKeyForTab(tabId), JSON.stringify({ tab: tabId, at: Date.now(),
+      ...(playlistId ? { playlist: playlistId } : {}), ...(validStorefront ? { storefront: validStorefront } : {}) }));
   } catch { /* ignore */ }
 }
 
@@ -265,10 +269,13 @@ export function readScanRequest(raw: string, now: number = Date.now()): ScanRequ
   const request = value as Partial<ScanRequest>;
   if (!isCount(request.tab) || request.tab < 1 || typeof request.at !== 'number' ||
     !Number.isFinite(request.at) || request.at <= 0 ||
-    !(request.playlist === undefined || typeof request.playlist === 'string' && playlistIdPattern.test(request.playlist))) return null;
+    !(request.playlist === undefined || typeof request.playlist === 'string' && playlistIdPattern.test(request.playlist)) ||
+    !(request.storefront === undefined || typeof request.storefront === 'string' && /^[a-z]{2}$/.test(request.storefront) &&
+      request.playlist?.startsWith('pl.'))) return null;
   const age = now - request.at;
   if (age < 0 || age > scanRequestMaxAgeMs) return null;
-  return { tab: request.tab, at: request.at, ...(request.playlist ? { playlist: request.playlist } : {}) };
+  return { tab: request.tab, at: request.at, ...(request.playlist ? { playlist: request.playlist } : {}),
+    ...(request.storefront ? { storefront: request.storefront } : {}) };
 }
 
 /** The live stored request plus its exact raw payload, so consuming it cannot remove a newer write. */
@@ -285,10 +292,16 @@ export function storedScanRequest(tabId: number, now: number = Date.now()): { ra
   }
 }
 
-/** Removes only the request the caller was shown; a newer write meanwhile is kept. */
-export function consumeScanRequest(tabId: number, expected: string): void {
+/** Removes only the request the caller was shown; returns true only when that exact entry was removed. */
+export function consumeScanRequest(tabId: number, expected: string): boolean {
   const store = storage();
-  if (!store) return;
+  if (!store) return false;
   const key = scanRequestKeyForTab(tabId);
-  try { if (store.getItem(key) === expected) store.removeItem(key); } catch { /* ignore */ }
+  try {
+    if (store.getItem(key) !== expected) return false;
+    store.removeItem(key);
+    return true;
+  } catch {
+    return false;
+  }
 }

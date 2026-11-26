@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { cacheFreshness, clearCachedScan, consumeScanRequest, loadCachedScan, loadScanWindowPreference, loadThemePreference, readScanRequest, saveCachedScan, saveScanWindowPreference, saveThemePreference, scanRequestKeyForTab, storedScanRequest, writeScanRequest, type CachedScan } from '../src/storage';
+import { cacheFreshness, clearCachedScan, consumeScanRequest, loadCachedScan, loadScanWindowPreference, loadThemePreference, readScanRequest, saveCachedScan, saveScanWindowPreference, saveThemePreference, scanRequestKeyForTab, scanWindowKey, storedScanRequest, themeKey, writeScanRequest, type CachedScan } from '../src/storage';
 import type { DuplicateGroup } from '../src/types';
 
 const values = new Map<string, string>();
@@ -45,6 +45,13 @@ test('a cached scan round-trips exact library IDs for rescan comparisons', () =>
   const aliased = { ...scan, groups: [{ ...group, libraryIds: ['i.first', 'i.second'] }] };
   assert.equal(saveCachedScan(aliased), true);
   assert.deepEqual(loadCachedScan('p.fixture'), aliased);
+});
+
+test('playlist IDs with underscores round-trip in cached scans', () => {
+  values.clear();
+  const underscored = { ...scan, playlistId: 'pl.u-ABC_1', storefront: 'us' };
+  assert.equal(saveCachedScan(underscored), true);
+  assert.deepEqual(loadCachedScan('pl.u-ABC_1', 'us'), underscored);
 });
 
 test('v1.2.5 cache and theme storage remain readable without migration', () => {
@@ -340,11 +347,40 @@ test('a scan request round-trips and consumes only the exact payload it was show
   assert.deepEqual(storedScanRequest(7), { raw, request });
   // A newer write meanwhile must survive the stale consume.
   values.set(scanRequestKeyForTab(7), JSON.stringify({ tab: 8, at: Date.now() }));
-  consumeScanRequest(7, raw as string);
+  assert.equal(consumeScanRequest(7, raw as string), false);
   assert.equal(readScanRequest(values.get(scanRequestKeyForTab(7)) as string)?.tab, 8);
   // Consuming the value actually stored removes it.
-  consumeScanRequest(7, values.get(scanRequestKeyForTab(7)) as string);
+  assert.equal(consumeScanRequest(7, values.get(scanRequestKeyForTab(7)) as string), true);
   assert.equal(values.get(scanRequestKeyForTab(7)), undefined);
+  assert.equal(consumeScanRequest(7, raw as string), false);
+});
+
+test('scan requests round-trip underscore playlist IDs and valid catalog storefronts', () => {
+  values.clear();
+  writeScanRequest(7, 'pl.u-ABC_1', 'us');
+  const stored = storedScanRequest(7);
+  assert.equal(stored?.request.playlist, 'pl.u-ABC_1');
+  assert.equal(stored?.request.storefront, 'us');
+});
+
+test('scan request storefronts reject invalid values and library playlists', () => {
+  const now = Date.now();
+  assert.equal(readScanRequest(JSON.stringify({ tab: 1, at: now, playlist: 'pl.u-ABC_1', storefront: 'gb' }), now)?.storefront, 'gb');
+  assert.equal(readScanRequest(JSON.stringify({ tab: 1, at: now, playlist: 'pl.u-ABC_1', storefront: 'GB' }), now), null);
+  assert.equal(readScanRequest(JSON.stringify({ tab: 1, at: now, playlist: 'pl.u-ABC_1', storefront: 'usa' }), now), null);
+  assert.equal(readScanRequest(JSON.stringify({ tab: 1, at: now, playlist: 'p.u-ABC_1', storefront: 'us' }), now), null);
+  assert.equal(readScanRequest(JSON.stringify({ tab: 1, at: now, storefront: 'us' }), now), null);
+  writeScanRequest(7, 'p.u-ABC_1', 'us');
+  assert.equal(storedScanRequest(7)?.request.storefront, undefined);
+  writeScanRequest(7, 'pl.u-ABC_1', 'usa');
+  assert.equal(storedScanRequest(7)?.request.storefront, undefined);
+  writeScanRequest(7, 'pl.u-ABC_1');
+  assert.equal(storedScanRequest(7)?.request.storefront, undefined);
+});
+
+test('preference keys are exported for live storage synchronization', () => {
+  assert.equal(themeKey, 'amdf:theme:v1');
+  assert.equal(scanWindowKey, 'amdf:scan-window:v1');
 });
 
 test('scan requests for different tabs coexist instead of overwriting each other', () => {

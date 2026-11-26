@@ -66,11 +66,13 @@ export async function readPlaylist(
   const cancel = (): void => controller.abort(new ScanError('CANCELLED'));
   options.signal?.addEventListener('abort', cancel, { once: true });
   if (options.signal?.aborted) cancel();
-  const started = Date.now();
+  const clock = typeof performance !== 'undefined' && typeof performance.now === 'function' ?
+    () => performance.now() : () => Date.now();
+  const started = clock();
   // Wall clock can jump backwards; the deadline must never extend because of it.
   let lastTimestamp = started;
   const now = (): number => {
-    lastTimestamp = Math.max(lastTimestamp, Date.now());
+    lastTimestamp = Math.max(lastTimestamp, clock());
     return lastTimestamp;
   };
   const timer = setTimeout(() => controller.abort(new ScanError('DEADLINE')), deadlineMs);
